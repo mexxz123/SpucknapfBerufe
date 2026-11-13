@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.14 (Testversion)
+SpucknapfBerufe v0.7.16 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -110,3 +110,17 @@ v0.7.14 HOTFIX: Kein automatischer Rezeptscan ohne explizit gewaehlten
 Beruf. Leere Rezeptscans duerfen bestehende Buecher niemals ersetzen.
 Zeitweise fehlende Berufe mit gespeicherten Rezepten bleiben erhalten.
 Alle Korrekturen aus 0.7.13 enthalten. Kein WoW-Client-Test.
+
+
+v0.7.15 HOTFIX: Keine Speicherung/Synchronisation unter blossem Vornamen.
+Vollstaendige Namen nur per Spieler-GUID-Zuordnung, nativer API oder
+GUID-abgeglichenem Gildenroster; keine Praefix-Heuristik.
+Bei fehlender Aufloesung je Charakter /spb name Vorname Nachname setzen.
+Alte Kurznamens-Dubletten werden separat unter legacyAliases archiviert,
+sobald passende vollstaendige Eintraege existieren. Keine geratenen Merges.
+Alle bisherigen Korrekturen enthalten. Kein WoW-Client-Test.
+
+
+v0.7.16: Dezente Versionsanzeige rechts oben neben dem Schliessen-Button.
+Sonst gleicher Funktionsstand wie 0.7.15. Automatische Namensaufloesung
+ohne manuellen Namen bleibt noch offen. Kein WoW-Client-Test.

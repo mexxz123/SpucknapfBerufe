@@ -68,53 +68,60 @@ local function countPeers() local n=0; if db and db.peers then for _ in pairs(db
 local function say(s) DEFAULT_CHAT_FRAME:AddMessage('|cff55cc88[SpucknapfBerufe]|r '..tostring(s)) end
 local function clock() return (GetTime and GetTime()) or 0 end
 local function stamp() return (time and time()) or 0 end
--- Forever can expose a first name through UnitName while guild messages use full names.
+-- Forever may return only a first name. Never use it as a character identity.
 local function shortName() return (UnitName and UnitName('player')) or '?' end
-local function guildFullName(short)
-  if type(GetNumGuildMembers)~='function' or type(GetGuildRosterInfo)~='function' then return nil end
-  local matches, found=0,nil
-  local count=GetNumGuildMembers() or 0
-  for i=1,count do
-    local full=GetGuildRosterInfo(i)
-    if type(full)=='string' then
-      full=full:match('^[^-]+') or full
-      if full==short or full:sub(1,#short+1)==short..' ' then
-        matches=matches+1; found=full
-      end
-    end
-  end
-  if matches==1 then return found end
-  return nil
-end
--- SavedVariables are shared by all characters; identity overrides must not be.
 local function playerKey()
   local guid=type(UnitGUID)=='function' and UnitGUID('player') or nil
-  if guid then return guid end
-  local realm=type(GetRealmName)=='function' and GetRealmName() or ''
-  return shortName()..'-'..tostring(realm)
+  if type(guid)=='string' and guid~='' then return guid end
+  return nil
 end
-local function who()
-  if db and db.playerNames and db.playerNames[playerKey()] then
-    return db.playerNames[playerKey()]
-  end
-  local short=shortName()
+local function resolvedPlayerName()
+  local key=playerKey()
+  if key and db and db.playerNames and db.playerNames[key] then return db.playerNames[key] end
   if type(UnitFullName)=='function' then
     local full=UnitFullName('player')
     if type(full)=='string' and full:find(' ',1,true) then return full end
   end
-  return guildFullName(short) or short
+  local native=shortName()
+  if native:find(' ',1,true) then return native end
+  -- Match a roster entry by GUID, never merely by its first name.
+  if key and type(GetNumGuildMembers)=='function' and type(GetGuildRosterInfo)=='function' then
+    for i=1,(GetNumGuildMembers() or 0) do
+      local values={GetGuildRosterInfo(i)}
+      for j=2,20 do
+        if values[j]==key and type(values[1])=='string' then
+          local full=values[1]:match('^[^-]+') or values[1]
+          if full:find(' ',1,true) then return full end
+        end
+      end
+    end
+  end
+  return nil
+end
+local function who() return resolvedPlayerName() or shortName() end
+local function archiveShortAliases()
+  if not db then return end
+  db.legacyAliases=db.legacyAliases or {}
+  local names={};for name in pairs(db.characters) do names[#names+1]=name end
+  for _,short in ipairs(names) do
+    if not short:find(' ',1,true) then
+      for _,full in ipairs(names) do
+        if full:sub(1,#short+1)==short..' ' then
+          db.legacyAliases[short]=db.legacyAliases[short] or {}
+          local list=db.legacyAliases[short]
+          list[#list+1]=db.characters[short]
+          db.characters[short]=nil
+          break
+        end
+      end
+    end
+  end
 end
 local function migrateLocalAlias(full)
-  if not db or not full or full==shortName() then return end
-  local short=shortName()
-  local old=db.characters[short]
-  if old and old.source=='local' then
-    local current=db.characters[full]
-    if not current or (tonumber(old.updated) or 0)>(tonumber(current.updated) or 0) then
-      db.characters[full]=old
-    end
-    db.characters[short]=nil
-  end
+  if not db or not full or not full:find(' ',1,true) then return end
+  -- Legacy short-name books may contain multiple characters. Preserve them
+  -- separately rather than assigning another character's professions by guess.
+  archiveShortAliases()
 end
 local function encode(s) return tostring(s or ''):gsub('([^%w%-%._ ])',function(c) return string.format('%%%02X',string.byte(c)) end):gsub(' ','%%20') end
 local function decode(s) return (s or ''):gsub('%%(%x%x)',function(h) return string.char(tonumber(h,16)) end) end
@@ -369,12 +376,14 @@ local function mergeScan()
       end
     end
   end
-  db.characters[name]={professions=fresh,updated=stamp(),source='local'}
+  db.characters[name]={professions=fresh,updated=stamp(),source='local',guid=playerKey()}
+  archiveShortAliases()
   return fresh
 end
 -- Build a complete immutable snapshot; do not interrupt an in-flight transfer.
 local function buildSnapshot()
   local messages={}
+  if not resolvedPlayerName() then return nil end
   local data=db.characters[who()]
   if not data then return nil end
   transferCounter=transferCounter+1
@@ -429,6 +438,9 @@ local function startTransfer(transfer)
 end
 local function sendSnapshot()
   if not db then return end
+  if not resolvedPlayerName() then
+    say('Vor dem Synchronisieren: /spb name Vorname Nachname setzen.');return
+  end
   local nextTransfer=buildSnapshot()
   if not nextTransfer then return end
   if outgoing then
@@ -440,6 +452,10 @@ local function sendSnapshot()
 end
 local function capture(verbose, requested)
   if not db then return end
+  if not resolvedPlayerName() then
+    if verbose then say('Vollstaendiger Charaktername fehlt. Bitte /spb name Vorname Nachname setzen. Rezepte bleiben unveraendert.') end
+    return
+  end
   local list=mergeScan()
   local result='Berufsdaten aktualisiert; Rezepte unveraendert.'
   if requested and requested~='' then result=scanRecipes(list,requested) end
@@ -651,10 +667,6 @@ local function onMessage(prefix,payload,channel,sender)
     end
     recentCompleted[name..':'..p.seq]=clock()
     enqueue('OK|'..p.seq)
-    -- If our client sends its own messages back with the full name, adopt that identity.
-    if name~=who() and name:sub(1,#shortName()+1)==shortName()..' ' and not db.playerNames[playerKey()] then
-      db.playerNames[playerKey()]=name; migrateLocalAlias(name)
-    end
     if name~=who() then db.characters[name]={professions=p.professions,updated=stamp(),source='guild'} end
     pending[name]=nil
     say('Berufsdaten von '..name..' empfangen ('..#p.professions..' Berufe).')
@@ -947,9 +959,9 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.14'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.16'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
-  ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-42,18)
+  ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
   ui.versionLabel:SetText('|cff938c81v'..tostring(version):gsub('^v','')..'|r')
   -- Visible resize control; normalize the initial CENTER anchor before sizing.
@@ -1384,12 +1396,13 @@ frame:SetScript('OnEvent',function(_,event,...)
       if db.windowWidth and db.windowHeight then ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655))) end
       ui.layout()
     end
+    archiveShortAliases()
     createMinimapButton()
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.14 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.16 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1623,6 +1636,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='identity' then say('UnitName: '..shortName()..' | Schluessel: '..who())
   elseif cmd=='name' then
     if arg=='' then say('Nutzung: /spb name Vorname Nachname')
+    elseif not playerKey() then say('Spieler-GUID noch nicht verfuegbar; bitte nach dem Login erneut versuchen.')
     elseif arg:find(' ',1,true) then db.playerNames[playerKey()]=arg; migrateLocalAlias(arg); capture(false); say('Vollstaendiger Name gesetzt: '..arg)
     else say('Bitte Vor- und Nachnamen eingeben.') end
   elseif cmd=='api' then apiReport()

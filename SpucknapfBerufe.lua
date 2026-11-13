@@ -667,6 +667,28 @@ local function createUI()
   ui:SetMovable(true);ui:EnableMouse(true)
   ui:RegisterForDrag('LeftButton');ui:SetScript('OnDragStart',ui.StartMoving);ui:SetScript('OnDragStop',ui.StopMovingOrSizing)
   style(ui,true)
+  -- Nine-piece fantasy gold border: corner images stay fixed while the edges
+  -- stretch with the window. The content and resize grip remain untouched.
+  local goldPath='Interface\\AddOns\\SpucknapfBerufe\\Textures\\GoldFrame\\'
+  local function borderPart(filename,point,relativePoint,x,y,w,h)
+    local tex=ui:CreateTexture(nil,'BORDER')
+    tex:SetTexture(goldPath..filename)
+    tex:SetPoint(point,ui,relativePoint,x,y)
+    tex:SetSize(w,h)
+    return tex
+  end
+  borderPart('CornerTL','TOPLEFT','TOPLEFT',-3,3,52,52)
+  borderPart('CornerTR','TOPRIGHT','TOPRIGHT',3,3,52,52)
+  borderPart('CornerBL','BOTTOMLEFT','BOTTOMLEFT',-3,-3,52,52)
+  borderPart('CornerBR','BOTTOMRIGHT','BOTTOMRIGHT',3,-3,52,52)
+  local topEdge=ui:CreateTexture(nil,'BORDER');topEdge:SetTexture(goldPath..'Horizontal')
+  topEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',46,3);topEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-46,3);topEdge:SetHeight(12)
+  local bottomEdge=ui:CreateTexture(nil,'BORDER');bottomEdge:SetTexture(goldPath..'Horizontal')
+  bottomEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',46,-3);bottomEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-46,-3);bottomEdge:SetHeight(12)
+  local leftEdge=ui:CreateTexture(nil,'BORDER');leftEdge:SetTexture(goldPath..'Vertical')
+  leftEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',-3,-46);leftEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',-3,46);leftEdge:SetWidth(12)
+  local rightEdge=ui:CreateTexture(nil,'BORDER');rightEdge:SetTexture(goldPath..'Vertical')
+  rightEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',3,-46);rightEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',3,46);rightEdge:SetWidth(12)
   local title=makeText(ui,18,-12,810,27,true);title:SetText('|cffffd27aSpucknapfBerufe|r  |cffb7a080Der salzige Spucknapf|r')
   local close=CreateFrame('Button',nil,ui,'UIPanelCloseButton');close:SetPoint('TOPRIGHT',-3,-3)
   local hint=makeText(ui,18,-41,910,17);hint:SetText('|cffc5b394Beruf  /  Handwerker  /  Rezeptbuch     •     Gespeicherte Gildendaten|r')
@@ -756,6 +778,13 @@ local function createUI()
     for i=1,ROWS do
       local row=CreateFrame('Button',nil,panel,'BackdropTemplate');row:SetSize(w-16,25);row:SetPoint('TOPLEFT',8,-34-(i-1)*26);style(row,false)
       local label=makeText(row,7,-2,w-28,20);resizeFont(label,14);row.label=label
+      if c==1 then
+        local professionIcon=row:CreateTexture(nil,'OVERLAY')
+        professionIcon:SetPoint('LEFT',row,'LEFT',5,0)
+        professionIcon:SetSize(20,20)
+        professionIcon:Hide()
+        row.professionIcon=professionIcon
+      end
       if c==3 then
         local marker=row:CreateFontString(nil,'OVERLAY','GameFontHighlight')
         marker:SetPoint('LEFT',row,'LEFT',5,0);marker:SetWidth(12)
@@ -819,7 +848,7 @@ local function createUI()
     local watermark=ui.pages[column]:CreateTexture(nil,'ARTWORK')
     watermark:SetPoint('CENTER',ui.pages[column],'CENTER',0,-10)
     watermark:SetSize(255,255)
-    watermark:SetAlpha(column==2 and 0.28 or 0.38)
+    watermark:SetAlpha(column==2 and 0.18 or 0.13)
     ui.professionWatermarks[#ui.professionWatermarks+1]=watermark
   end
   -- Persistent bottom status bar, visible even while idle.
@@ -868,7 +897,7 @@ local function createUI()
       ui.headers[c]:SetWidth(ws[c]-18)
       for i,row in ipairs(ui.columns[c]) do
         row:SetWidth(ws[c]-16)
-        row.label:SetWidth(ws[c]-34)
+        row.label:SetWidth(ws[c]-(c==1 and 48 or 34))
       end
     end
     ui.detailPanel:ClearAllPoints()
@@ -945,7 +974,12 @@ local function setButtons(column,items,callback,selected)
         else row:SetBackdropBorderColor(0.25,0.22,0.17,1) end
       end
       row.label:ClearAllPoints()
-      row.label:SetPoint('TOPLEFT',row,'TOPLEFT',isSelected and 20 or 7,-2)
+      if row.professionIcon then
+        local icon=ui.professionIcons and ui.professionIcons[entry.name]
+        if icon then row.professionIcon:SetTexture(icon);row.professionIcon:Show()
+        else row.professionIcon:Hide() end
+      end
+      row.label:SetPoint('TOPLEFT',row,'TOPLEFT',row.professionIcon and 32 or (isSelected and 20 or 7),-2)
       row.label:SetText((entry.category and '|cffffd27a' or isSelected and '|cffb8ffe4' or '|cffe8ddc6')..entry.label..'|r')
       row:Show();row:SetScript('OnClick',function() callback(entry) end)
       row.recipeID=entry.recipe and entry.recipe.id or nil
@@ -978,7 +1012,7 @@ local function setButtons(column,items,callback,selected)
         end
         if GameTooltip then GameTooltip:Hide() end
       end)
-    else row:Hide();row.isSelected=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
+    else row:Hide();if row.professionIcon then row.professionIcon:Hide() end;row.isSelected=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
   end
 end
 renderUI=function()
@@ -995,6 +1029,18 @@ renderUI=function()
   end
   local names={};for name in pairs(professionMap) do names[#names+1]=name end
   table.sort(names,function(a,b) return tostring(a):lower()<tostring(b):lower() end)
+  local professionIcons={
+    ['Ingenieurskunst']='Interface\\Icons\\Trade_Engineering',
+    ['Kochkunst']='Interface\\Icons\\INV_Misc_Food_15',
+    ['Lederverarbeitung']='Interface\\Icons\\Trade_LeatherWorking',
+    ['Schmiedekunst']='Interface\\Icons\\Trade_BlackSmithing',
+    ['Alchemie']='Interface\\Icons\\Trade_Alchemy',
+    ['Schneiderei']='Interface\\Icons\\Trade_Tailoring',
+    ['Verzauberkunst']='Interface\\Icons\\Trade_Engraving',
+    ['Juwelenschleifen']='Interface\\Icons\\INV_Misc_Gem_01',
+    ['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01',
+  }
+  ui.professionIcons=professionIcons
   local professionTextures={['Ingenieurskunst']='Engineering',['Kochkunst']='Cooking',['Lederverarbeitung']='Leatherworking',['Schmiedekunst']='Blacksmithing',['Alchemie']='Alchemy',['Schneiderei']='Tailoring',['Verzauberkunst']='Enchanting',['Juwelenschleifen']='Jewelcrafting',['Inschriftenkunde']='Inscription'}
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
   if ui.professionWatermarks then

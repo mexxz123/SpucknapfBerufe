@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.8.3 (Testversion)
+SpucknapfBerufe v0.8.4 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -224,3 +224,12 @@ Mindestens ein Empfaenger dieser Daten muss spaeter online sein.
 Bestehende alte Buecher ohne Versions-/Gildennachweis werden nicht
 blind weitergereicht. Keine externe Speicherung oder Hintergrundserver.
 Neue Mehrclient-Laufzeittests bestanden; WoW-Client-Test steht aus.
+
+
+v0.8.4 TEST: Minimap-Button als benanntes Minimap-Kind wieder fuer
+Button-Sammler erkennbar. Nach Uebernahme durch ein Sammelfenster
+keine eigene Positionierung oder eigenes Ziehen; ohne Sammler weiterhin
+aussen positionierbar mit gespeichertem Abstand. Skalierung angepasst.
+Mit den Erkennungsregeln der lokal installierten EllesmereUI abgeglichen.
+Kein LibDBIcon-Zwang, keine Aenderung an EllesmereUI-Dateien.
+Alle Funktionen aus 0.8.3 enthalten; WoW-Client-Test steht aus.

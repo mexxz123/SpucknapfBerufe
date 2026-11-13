@@ -1478,7 +1478,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.3'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.4'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1856,14 +1856,15 @@ local function minimapGeometry()
   local mx,my=Minimap:GetCenter()
   if not parentScale or parentScale<=0 or not mapScale or not mx or not my then return nil end
   local ratio=mapScale/parentScale
-  return mx*ratio,my*ratio,Minimap:GetWidth()*ratio/2+18,Minimap:GetHeight()*ratio/2+18,parentScale
+  local padding=16*ratio+2
+  return mx*ratio,my*ratio,Minimap:GetWidth()*ratio/2+padding,Minimap:GetHeight()*ratio/2+padding,parentScale
 end
 local function minimapEdgeRadius(angle,rx,ry)
   local c,s=math.cos(angle),math.sin(angle)
   return 1/math.sqrt(c*c/(rx*rx)+s*s/(ry*ry))
 end
 local function positionMinimapButton()
-  if not minimapButton then return end
+  if not minimapButton or minimapButton:GetParent()~=Minimap then return end
   local mx,my,rx,ry=minimapGeometry()
   if not mx then return end
   local angle=math.rad((db and tonumber(db.minimapAngle)) or 225)
@@ -1874,7 +1875,7 @@ local function positionMinimapButton()
 end
 local function createMinimapButton()
   if minimapButton or not Minimap then return end
-  minimapButton=CreateFrame('Button','SpucknapfBerufeMinimapButton',UIParent)
+  minimapButton=CreateFrame('Button','SpucknapfBerufeMinimapButton',Minimap)
   minimapButton:SetSize(32,32)
   minimapButton:SetFrameStrata('MEDIUM')
   minimapButton:SetFrameLevel((Minimap:GetFrameLevel() or 0)+8)
@@ -1895,14 +1896,20 @@ local function createMinimapButton()
     end
   end)
   minimapButton:SetScript('OnDragStart',function(self)
+    if self:GetParent()~=Minimap then return end
     self.dragging=true;self.dragMoved=false
     local _,_,_,_,scale=minimapGeometry()
     local bx,by=self:GetCenter()
+    if bx and by then
+      local ratio=self:GetEffectiveScale()/UIParent:GetEffectiveScale()
+      bx=bx*ratio;by=by*ratio
+    end
     local x,y=GetCursorPosition()
     self.cursorOffsetX=scale and bx and x/scale-bx or 0
     self.cursorOffsetY=scale and by and y/scale-by or 0
     if GameTooltip then GameTooltip:Hide() end
     self:SetScript('OnUpdate',function(btn)
+      if btn:GetParent()~=Minimap then btn.dragging=false;btn:SetScript('OnUpdate',nil);return end
       local mx,my,rx,ry,parentScale=minimapGeometry()
       if not mx or not GetCursorPosition then return end
       local x,y=GetCursorPosition()
@@ -1957,7 +1964,7 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     registerPrefix()
-    say('Testversion 0.8.3 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.8.4 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO|CACHE1')

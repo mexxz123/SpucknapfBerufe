@@ -7,6 +7,7 @@ local lastScan, lastSend = 0, 0
 local outgoing=nil
 local numberedPending={}
 local recentCompleted={}
+local controlQueue,controlQueued={},{}
 local syncState="Bereit"
 local syncProgress=0
 local syncTotal=0
@@ -145,6 +146,24 @@ local function validProfessionIcon(icon)
   end
   return nil
 end
+-- ACKs and repair requests must not wait behind a recipe upload.
+local function enqueueControl(message)
+  if #message>240 or controlQueued[message] then return end
+  if #controlQueue>=128 then return end
+  controlQueued[message]=true;controlQueue[#controlQueue+1]=message
+end
+local function requestMissing(box)
+  if clock()-box.lastRequest<2 then return end
+  local requested=0
+  for i=1,box.total do
+    if not box.parts[i] then
+      enqueueControl('MISS|'..box.seq..'|'..i)
+      requested=requested+1
+      if requested>=8 then break end
+    end
+  end
+  box.lastRequest=clock()
+end
 local function profInfo(index)
   if type(GetProfessionInfo)~='function' then return nil end
   local ok,name,icon,skill,maxSkill,_,_,skillLine = pcall(GetProfessionInfo,index)
@@ -157,7 +176,9 @@ local function professions()
   if type(GetProfessions)~='function' then return list end
   local ok,a,b,c,d,e=pcall(GetProfessions)
   if not ok then return list end
-  for _,index in ipairs({a,b,c,d,e}) do
+  local indexes={a,b,c,d,e}
+  for position=1,5 do
+    local index=indexes[position]
     if type(index)=='number' and index>0 then
       local p=profInfo(index)
       if p and not excluded[p.name] then list[#list+1]=p end
@@ -432,7 +453,7 @@ local function startTransfer(transfer)
   outgoing.attempts=outgoing.attempts+1
   queue={}
   for _,msg in ipairs(outgoing.messages) do queue[#queue+1]=msg end
-  outgoing.sentAt=nil
+  outgoing.sentAt=nil;outgoing.lastCheck=nil
   syncState='Senden';syncProgress=0;syncTotal=#outgoing.messages;syncConfirmed=false
   lastSend=clock()
 end
@@ -585,13 +606,21 @@ local function onMessage(prefix,payload,channel,sender)
   local name=sender:match('^[^-]+') or sender
   if name==who() then return end
   local a=split(payload); local kind=a[1]
+  if kind=='CHECK' then
+    if recentCompleted[name..':'..a[2]] then
+      enqueueControl('OK|'..a[2])
+    elseif numberedPending[name] and numberedPending[name].seq==a[2] then
+      requestMissing(numberedPending[name])
+    end
+    return
+  end
   if kind=='D' then
     local seq,idx,total=a[2],tonumber(a[3]),tonumber(a[4])
     if not seq or not idx or not total or total<1 or total>3000 or idx<1 or idx>total then return end
     local part=payload:match('^D|[^|]*|[^|]*|[^|]*|(.*)$')
     if not part then return end
     if recentCompleted[name..':'..seq] then
-      enqueue('OK|'..seq)
+      enqueueControl('OK|'..seq)
       return
     end
     local box=numberedPending[name]
@@ -602,6 +631,8 @@ local function onMessage(prefix,payload,channel,sender)
     if box.total~=total then return end
     if not box.parts[idx] then box.parts[idx]=part;box.received=box.received+1 end
     box.started=clock()
+    syncState='Empfange '..name..': '..box.received..'/'..total
+    if idx==total and box.received<total then requestMissing(box) end
     if box.received==total then
       numberedPending[name]=nil
       -- Assemble the complete book before publishing anything to saved data.
@@ -666,9 +697,10 @@ local function onMessage(prefix,payload,channel,sender)
       return
     end
     recentCompleted[name..':'..p.seq]=clock()
-    enqueue('OK|'..p.seq)
+    enqueueControl('OK|'..p.seq)
     if name~=who() then db.characters[name]={professions=p.professions,updated=stamp(),source='guild'} end
     pending[name]=nil
+    syncState='Empfangen von '..name
     say('Berufsdaten von '..name..' empfangen ('..#p.professions..' Berufe).')
     if renderUI then renderUI() end
   end
@@ -811,8 +843,10 @@ local function createUI()
       say('Bitte zuerst links einen Herstellungsberuf auswaehlen und dessen Berufsreiter im Spiel oeffnen.')
       return
     end
-    capture(true,selectedScanProfession)
-    say('Scan: '..selectedScanProfession..' (aktiver Reiter muss uebereinstimmen).')
+    local opened=activeTradeSkillName(C_TradeSkillUI or {})
+    local requested=opened and not excluded[opened] and opened or selectedScanProfession
+    capture(true,requested)
+    -- capture reports the actual scan result; do not report the old selection.
   end)
   actionButton('Synchronisieren',148,165,function()
     sendSnapshot()
@@ -959,7 +993,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.16'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.18'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1182,6 +1216,10 @@ renderUI=function()
       end
     end
   end
+  -- Always offer crafting professions, even before their first scan.
+  local available={'Ingenieurskunst','Kochkunst','Lederverarbeitung','Schmiedekunst','Schneiderei','Verzauberkunst'}
+  for _,name in ipairs(available) do professionMap[name]=professionMap[name] or {} end
+  if not professionMap['Alchemie'] and not professionMap['Alchimie'] then professionMap['Alchimie']={} end
   local names={};for name in pairs(professionMap) do names[#names+1]=name end
   table.sort(names,function(a,b) return tostring(a):lower()<tostring(b):lower() end)
   local professionIcons={
@@ -1402,7 +1440,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.16 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.18 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1444,7 +1482,10 @@ frame:SetScript('OnUpdate',function(_,dt)
   elapsed=elapsed+dt
   if elapsed<SEND_INTERVAL then return end
   elapsed=0
-  if #queue>0 then
+  if #controlQueue>0 then
+    local message=table.remove(controlQueue,1);controlQueued[message]=nil
+    transmit(message)
+  elseif #queue>0 then
     transmit(table.remove(queue,1))
     if #queue==0 and outgoing then outgoing.sentAt=clock() end
   elseif outgoing and outgoing.sentAt then
@@ -1464,18 +1505,13 @@ frame:SetScript('OnUpdate',function(_,dt)
       end
     end
   end
+  if outgoing and outgoing.sentAt and not outgoing.acknowledged
+    and clock()-outgoing.sentAt>=4 and clock()-(outgoing.lastCheck or outgoing.sentAt)>=4 then
+    enqueueControl('CHECK|'..outgoing.seq)
+    outgoing.lastCheck=clock()
+  end
   for sender,box in pairs(numberedPending) do
-    if clock()-box.started>8 and clock()-box.lastRequest>12 then
-      local requested=0
-      for i=1,box.total do
-        if not box.parts[i] then
-          enqueue('MISS|'..box.seq..'|'..i)
-          requested=requested+1
-          if requested>=8 then break end
-        end
-      end
-      box.lastRequest=clock()
-    end
+    if clock()-box.started>1 then requestMissing(box) end
     if clock()-box.started>300 then numberedPending[sender]=nil end
   end
   for key,when in pairs(recentCompleted) do

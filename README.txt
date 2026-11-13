@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.16 (Testversion)
+SpucknapfBerufe v0.7.18 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -124,3 +124,21 @@ Alle bisherigen Korrekturen enthalten. Kein WoW-Client-Test.
 v0.7.16: Dezente Versionsanzeige rechts oben neben dem Schliessen-Button.
 Sonst gleicher Funktionsstand wie 0.7.15. Automatische Namensaufloesung
 ohne manuellen Namen bleibt noch offen. Kein WoW-Client-Test.
+
+
+v0.7.17 SYNC-HOTFIX: Separate priorisierte Warteschlange fuer Empfangs-
+bestaetigungen und Reparaturanfragen. ACK-Nachfrage alle 4 Sekunden,
+wenn Versand abgeschlossen: kompletter Empfaenger bestaetigt erneut.
+Fehlende Pakete ab letztem Paket bzw. 1 Sekunde Ruhe, max. 8 Anfragen
+je 2 Sekunden statt 8 Sekunden Ruhe/12 Sekunden Abstand.
+Sendeintervall bleibt 0.06 Sekunden. Beide Clients aktualisieren.
+Alte Clients ignorieren CHECK; Timeout/kompletter Retry bleibt erhalten.
+Noch nicht im WoW-Client getestet.
+
+
+v0.7.18 TEST: Alle sieben gewuenschten Herstellungsberufe in der Auswahl, auch vor
+dem ersten Scan. Scan bevorzugt den tatsaechlich geoeffneten Beruf.
+GetProfessions-Luecken brechen die Berufserkennung nicht mehr ab.
+Enthaelt Sync-Hotfix aus 0.7.17. Beide Clients aktualisieren.
+Namensaufloesung hat weiterhin den manuellen Fallback bei fehlender GUID-
+Rosterzuordnung. Kein WoW-Client-Test.

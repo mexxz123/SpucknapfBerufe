@@ -14,7 +14,7 @@ local syncConfirmed=false
 local retryAt=0
 local transferCounter=0
 local lastTransferNotice=0
-local SEND_INTERVAL=0.10 -- cautiously faster; keep throttling guild addon messages
+local SEND_INTERVAL=0.06 -- paced sending; ACK and repair timeouts remain unchanged
 local ACK_WAIT=40 -- allow packet repair and receiver processing
 local lastRecipeSignature=nil
 local activeProfession=nil
@@ -86,12 +86,21 @@ local function guildFullName(short)
   if matches==1 then return found end
   return nil
 end
+-- SavedVariables are shared by all characters; identity overrides must not be.
+local function playerKey()
+  local guid=type(UnitGUID)=='function' and UnitGUID('player') or nil
+  if guid then return guid end
+  local realm=type(GetRealmName)=='function' and GetRealmName() or ''
+  return shortName()..'-'..tostring(realm)
+end
 local function who()
-  if db and type(db.myFullName)=='string' and db.myFullName~='' then return db.myFullName end
+  if db and db.playerNames and db.playerNames[playerKey()] then
+    return db.playerNames[playerKey()]
+  end
   local short=shortName()
   if type(UnitFullName)=='function' then
-    local a=UnitFullName('player')
-    if type(a)=='string' and a:find(' ',1,true) then return a end
+    local full=UnitFullName('player')
+    if type(full)=='string' and full:find(' ',1,true) then return full end
   end
   return guildFullName(short) or short
 end
@@ -119,11 +128,21 @@ local function transmit(s)
   elseif type(SendAddonMessage)=='function' then SendAddonMessage(PREFIX,s,'GUILD') end
 end
 local function enqueue(s) if #s <= 240 then queue[#queue+1]=s; return true end; return false end
+-- Client-provided profession icons support names beyond the fallback table.
+local function validProfessionIcon(icon)
+  if type(icon)=='number' and icon>0 and icon==math.floor(icon) then return icon end
+  if type(icon)=='string' then
+    local numeric=tonumber(icon)
+    if numeric and numeric>0 and numeric==math.floor(numeric) then return numeric end
+    if #icon<160 and icon:lower():match('^interface[\\/]icons[\\/][%w_%-]+$') then return icon end
+  end
+  return nil
+end
 local function profInfo(index)
   if type(GetProfessionInfo)~='function' then return nil end
   local ok,name,icon,skill,maxSkill,_,_,skillLine = pcall(GetProfessionInfo,index)
   if ok and type(name)=='string' and name~='' then
-    return {name=name,skill=tonumber(skill) or 0,max=tonumber(maxSkill) or 0,id=tonumber(skillLine) or 0,recipes={},complete=false}
+    return {name=name,icon=validProfessionIcon(icon),skill=tonumber(skill) or 0,max=tonumber(maxSkill) or 0,id=tonumber(skillLine) or 0,recipes={},complete=false}
   end
 end
 local function professions()
@@ -250,6 +269,9 @@ local function scanRecipes(list, requested)
   if unknown>0 then
     return target.name..': Erlernstatus bei '..unknown..' Rezepten unklar; Daten nicht ueberschrieben. /spb probe'
   end
+  if #recipes==0 then
+    return target.name..': Keine erlernten Rezepte geladen; vorhandene Daten bleiben erhalten. Berufsfenster oeffnen und erneut scannen.'
+  end
   target.recipes=recipes; target.complete=true
   return target.name..': '..#recipes..' erlernte Rezepte aus '..#ids..' IDs gespeichert'
 end
@@ -328,12 +350,22 @@ local function mergeScan()
   migrateLocalAlias(name)
   local fresh=professions()
   local old=db.characters[name]
+  if #fresh==0 and old and old.professions then return old.professions end
   if old and old.professions then
     for _,p in ipairs(fresh) do
       for _,prior in ipairs(old.professions) do
-        if p.name==prior.name and not p.complete and prior.complete then
-          p.recipes=prior.recipes or {}; p.complete=true
+        if p.name==prior.name and not p.complete and (prior.complete or #(prior.recipes or {})>0) then
+          p.recipes=prior.recipes or {}; p.complete=prior.complete or #p.recipes>0
         end
+      end
+    end
+  end
+  -- Temporarily missing skill lines must not discard previously scanned books.
+  if old then
+    local seen={};for _,p in ipairs(fresh) do seen[p.name]=true end
+    for _,prior in ipairs(old.professions or {}) do
+      if not seen[prior.name] and #(prior.recipes or {})>0 and not excluded[prior.name] then
+        fresh[#fresh+1]=prior
       end
     end
   end
@@ -355,10 +387,20 @@ local function buildSnapshot()
   add('B|'..seq)
   for _,p in ipairs(data.professions or {}) do
     if not excluded[p.name] then
-      add('P|'..seq..'|'..encode(p.name)..'|'..p.skill..'|'..p.max..'|'..p.id..'|'..(p.complete and '1' or '0'))
+      local profRecord='P|'..seq..'|'..encode(p.name)..'|'..p.skill..'|'..p.max..'|'..p.id..'|'..(p.complete and '1' or '0')
+      local icon=validProfessionIcon(p.icon)
+      if icon then
+        local withIcon=profRecord..'|'..encode(icon)
+        if #withIcon+#seq+24<=240 then profRecord=withIcon end
+      end
+      add(profRecord)
       if p.complete then
         for _,r in ipairs(p.recipes or {}) do
-          add('R|'..seq..'|'..encode(p.name)..'|'..tostring(r.id)..'|'..encode(r.name)..'|'..encode(r.category or ''))
+          local record='R|'..seq..'|'..encode(p.name)..'|'..tostring(r.id)..'|'..encode(r.name)..'|'..encode(r.category or '')
+          local withSkills=record..'|'..tostring(tonumber(r.skill) or '')..'|'..tostring(tonumber(r.trivialLevel) or '')
+          -- Optional trailing fields: older clients ignore them. Reserve numbered-packet overhead.
+          if #withSkills+#seq+24<=240 then record=withSkills end
+          add(record)
           for _,m in ipairs(r.materials or {}) do
             add('M|'..seq..'|'..encode(p.name)..'|'..tostring(r.id)..'|'..tostring(m.id)..'|'..tostring(m.qty))
           end
@@ -399,7 +441,8 @@ end
 local function capture(verbose, requested)
   if not db then return end
   local list=mergeScan()
-  local result=scanRecipes(list, requested)
+  local result='Berufsdaten aktualisiert; Rezepte unveraendert.'
+  if requested and requested~='' then result=scanRecipes(list,requested) end
   db.characters[who()].updated=stamp()
   if verbose then
     say('Berufe erkannt: '..#list)
@@ -572,7 +615,7 @@ local function onMessage(prefix,payload,channel,sender)
   elseif kind=='P' and pending[name] and pending[name].seq==a[2] then
     local p=pending[name]; p.count=p.count+1
     if #p.professions>=15 then return end
-    local prof={name=decode(a[3]),skill=tonumber(a[4]) or 0,max=tonumber(a[5]) or 0,id=tonumber(a[6]) or 0,complete=a[7]=='1',recipes={}}
+    local prof={name=decode(a[3]),skill=tonumber(a[4]) or 0,max=tonumber(a[5]) or 0,id=tonumber(a[6]) or 0,complete=a[7]=='1',icon=validProfessionIcon(decode(a[8])),recipes={}}
     if #prof.name>0 and #prof.name<100 and not excluded[prof.name] then p.professions[#p.professions+1]=prof end
   elseif kind=='R' and pending[name] and pending[name].seq==a[2] then
     local p=pending[name]; p.count=p.count+1
@@ -581,7 +624,7 @@ local function onMessage(prefix,payload,channel,sender)
     if id and #recname>0 and #recname<180 then
       for _,prof in ipairs(p.professions) do
         if prof.name==profname and prof.complete then
-          prof.recipes[#prof.recipes+1]={id=id,name=recname,category=(a[6] and decode(a[6])~='' and decode(a[6]) or nil),materials={}}; break
+          prof.recipes[#prof.recipes+1]={id=id,name=recname,category=(a[6] and decode(a[6])~='' and decode(a[6]) or nil),skill=tonumber(a[7]),trivialLevel=tonumber(a[8]),materials={}}; break
         end
       end
     end
@@ -609,8 +652,8 @@ local function onMessage(prefix,payload,channel,sender)
     recentCompleted[name..':'..p.seq]=clock()
     enqueue('OK|'..p.seq)
     -- If our client sends its own messages back with the full name, adopt that identity.
-    if name~=who() and name:sub(1,#shortName()+1)==shortName()..' ' and not db.myFullName then
-      db.myFullName=name; migrateLocalAlias(name)
+    if name~=who() and name:sub(1,#shortName()+1)==shortName()..' ' and not db.playerNames[playerKey()] then
+      db.playerNames[playerKey()]=name; migrateLocalAlias(name)
     end
     if name~=who() then db.characters[name]={professions=p.professions,updated=stamp(),source='guild'} end
     pending[name]=nil
@@ -904,7 +947,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.10'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.14'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-42,18)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -926,6 +969,7 @@ local function createUI()
   local function finishResize()
     if not grip.resizing then return end
     grip.resizing=false
+    grip:SetScript('OnUpdate',nil)
     ui:StopMovingOrSizing()
     saveWindowSize()
   end
@@ -943,18 +987,29 @@ local function createUI()
     if GameTooltip then GameTooltip:Hide() end
   end)
   grip:SetScript('OnMouseDown',function(self,button)
-    if button~='LeftButton' or not ui.StartSizing then return end
+    if button~='LeftButton' or type(GetCursorPosition)~='function' then return end
     ui:StopMovingOrSizing()
     local left,top=ui:GetLeft(),ui:GetTop()
     if not left or not top then return end
-    local width,height=ui:GetWidth(),ui:GetHeight()
-    local scale=ui:GetEffectiveScale()/UIParent:GetEffectiveScale()
+    local scale=ui:GetEffectiveScale()
+    local parentScale=UIParent:GetEffectiveScale()
+    local x,y=GetCursorPosition()
+    self.startX=x/scale;self.startY=y/scale
+    self.startWidth=ui:GetWidth();self.startHeight=ui:GetHeight()
     ui:ClearAllPoints()
-    ui:SetPoint('TOPLEFT',UIParent,'BOTTOMLEFT',left*scale,top*scale)
-    ui:SetSize(width,height)
+    ui:SetPoint('TOPLEFT',UIParent,'BOTTOMLEFT',left*scale/parentScale,top*scale/parentScale)
     self.resizing=true
     if GameTooltip then GameTooltip:Hide() end
-    ui:StartSizing('BOTTOMRIGHT')
+    self:SetScript('OnUpdate',function(handle)
+      if not handle.resizing then return end
+      if type(IsMouseButtonDown)=='function' and not IsMouseButtonDown('LeftButton') then
+        finishResize();return
+      end
+      local cx,cy=GetCursorPosition()
+      local width=math.max(740,math.min(1600,handle.startWidth+cx/scale-handle.startX))
+      local height=math.max(490,math.min(1100,handle.startHeight+handle.startY-cy/scale))
+      ui:SetSize(width,height)
+    end)
   end)
   grip:SetScript('OnMouseUp',function(_,button)
     if button=='LeftButton' then finishResize() end
@@ -1123,11 +1178,18 @@ renderUI=function()
     ['Lederverarbeitung']='Interface\\Icons\\Trade_LeatherWorking',
     ['Schmiedekunst']='Interface\\Icons\\Trade_BlackSmithing',
     ['Alchemie']='Interface\\Icons\\Trade_Alchemy',
+    ['Alchimie']='Interface\\Icons\\Trade_Alchemy',
     ['Schneiderei']='Interface\\Icons\\Trade_Tailoring',
     ['Verzauberkunst']='Interface\\Icons\\Trade_Engraving',
     ['Juwelenschleifen']='Interface\\Icons\\INV_Misc_Gem_01',
     ['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01',
   }
+  for name,members in pairs(professionMap) do
+    for _,member in ipairs(members) do
+      local icon=validProfessionIcon(member.prof.icon)
+      if icon then professionIcons[name]=icon;break end
+    end
+  end
   ui.professionIcons=professionIcons
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
   if ui.professionWatermarks then
@@ -1176,7 +1238,7 @@ renderUI=function()
   end
   if ui.skillNote then
     if recipeSort~='name' and not hasSkills then
-      ui.skillNote:SetText('|cffffb46aKeine Schwierigkeitswerte vorhanden|r')
+      ui.skillNote:SetText('|cffffb46aBeruf neu scannen und synchronisieren|r')
     else ui.skillNote:SetText('') end
   end
   table.sort(categories)
@@ -1317,7 +1379,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if ...~=addonName then return end
     SpucknapfBerufeDB=SpucknapfBerufeDB or {}
     db=SpucknapfBerufeDB
-    db.characters=db.characters or {}; db.peers=db.peers or {}
+    db.characters=db.characters or {}; db.peers=db.peers or {}; db.playerNames=db.playerNames or {}
     if ui and ui.layout then
       if db.windowWidth and db.windowHeight then ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655))) end
       ui.layout()
@@ -1327,7 +1389,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.10 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.14 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1561,7 +1623,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='identity' then say('UnitName: '..shortName()..' | Schluessel: '..who())
   elseif cmd=='name' then
     if arg=='' then say('Nutzung: /spb name Vorname Nachname')
-    elseif arg:find(' ',1,true) then db.myFullName=arg; migrateLocalAlias(arg); capture(false); say('Vollstaendiger Name gesetzt: '..arg)
+    elseif arg:find(' ',1,true) then db.playerNames[playerKey()]=arg; migrateLocalAlias(arg); capture(false); say('Vollstaendiger Name gesetzt: '..arg)
     else say('Bitte Vor- und Nachnamen eingeben.') end
   elseif cmd=='api' then apiReport()
   elseif cmd=='scan' then if arg~='' then activeProfession=arg end; capture(true,arg)

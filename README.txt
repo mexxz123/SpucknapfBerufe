@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.10 (Testversion)
+SpucknapfBerufe v0.7.14 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -81,3 +81,32 @@ v0.7.10 HOTFIX: Variablenueberschattung im Goldrahmen behoben.
 Vorher String statt Blau-Farbwert in SetVertexColor: UI-Aufbau brach ab.
 Fehler in Lua-Laufzeit mit UI-Mocks reproduziert; korrigierte Rahmen bestehen.
 Vollstaendige Lua-5.1-Syntaxpruefung bestanden. Kein WoW-Client-Test.
+
+
+v0.7.11 TEST: Resize ueber relative Mausbewegung statt StartSizing.
+Groesse bleibt beim Anklicken erhalten, UI-Skalierung wird beruecksichtigt.
+Sync uebertraegt jetzt optionale Rezept-Skill-/Trivialitaetswerte.
+Fuer Schwierigkeitssortierung beide Clients aktualisieren; Beruf beim
+Handwerker im originalen Berufsfenster neu scannen und erneut synchronisieren.
+Alte Pakete werden weiter gelesen. Keine erfundenen Schwierigkeitswerte.
+WoW-Client-Test steht aus.
+
+Zusaetzlich: Manuelle Namenszuordnung pro Spieler-GUID statt globalem
+myFullName. Andere Charaktere behalten ihre Berufe. Leere temporaere
+Berufserkennung ueberschreibt bestehende Daten nicht. Bereits verlorene
+Daten bitte auf dem betroffenen Charakter neu scannen.
+Lua-Laufzeittests mit UI-/API-Mocks fuer Resize, Sync und Charakterwechsel
+sowie gesamte Lua-5.1-Syntaxpruefung bestanden; kein WoW-Client-Test.
+
+
+v0.7.13 TEST: Client-Symbole pro Beruf gespeichert/synchronisiert,
+Alchimie-Schreibweise ergaenzt. Dieselben Symbole fuer Liste/Hintergrund.
+Sync-Sendeintervall 0.06 statt 0.10 Sekunden; ACK/Reparatur unveraendert.
+Alle Korrekturen aus 0.7.11 enthalten. Beide Clients aktualisieren.
+Noch nicht im WoW-Client getestet; bitte Laufzeit und Empfang pruefen.
+
+
+v0.7.14 HOTFIX: Kein automatischer Rezeptscan ohne explizit gewaehlten
+Beruf. Leere Rezeptscans duerfen bestehende Buecher niemals ersetzen.
+Zeitweise fehlende Berufe mit gespeicherten Rezepten bleiben erhalten.
+Alle Korrekturen aus 0.7.13 enthalten. Kein WoW-Client-Test.

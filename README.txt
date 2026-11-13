@@ -40,3 +40,10 @@ Version 0.6.5: Sync-Test: Versandintervall 0.16s statt 0.32s, ACK-Wartezeit 55s,
 
 
 v0.7.0 Test: Materialicons (GetItemIcon zuerst; GetItemInfo Texturposition korrigiert), mehrzeilige Scan-Hinweise sichtbar.
+
+
+v0.7.1 TEST: Fenster rechts unten per Ziehgriff vergroessern/verkleinern;
+Spalten und Listen passen sich an. Materialbereich: bei mehr als einer Zeile
+mit dem Mausrad ueber dem unteren Bereich blaettern. Berufsliste A-Z.
+Dezente berufsspezifische WoW-Icon-Wasserzeichen im Rezeptbuch.
+Fenstergroesse wird in SavedVariables gespeichert.

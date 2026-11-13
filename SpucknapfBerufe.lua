@@ -625,7 +625,11 @@ local searchText=''
 local recipeSort='name'
 local collapsedCategories={}
 local offsets={0,0,0}
-local ROWS=13
+local ROWS=30 -- pre-create enough rows for a tall resized window
+local visibleRows=13
+local materialOffset=0
+local materialColumns=4
+local activeMaterials={}
 -- Increase existing Blizzard font sizes without requiring bundled font files.
 local function resizeFont(fontString,size)
   if not fontString or not fontString.GetFont then return end
@@ -651,6 +655,7 @@ local function createUI()
   if ui then return end
   ui=CreateFrame('Frame','SpucknapfBerufeWindow',UIParent,'BackdropTemplate')
   ui:SetSize(970,655);ui:SetPoint('CENTER');ui:SetClampedToScreen(true)
+  ui:SetResizable(true);ui:SetMinResize(740,490);ui:SetMaxResize(1600,1100)
   ui:SetFrameStrata('DIALOG');ui:SetFrameLevel(100);ui:SetToplevel(true)
   ui:SetMovable(true);ui:EnableMouse(true)
   ui:RegisterForDrag('LeftButton');ui:SetScript('OnDragStart',ui.StartMoving);ui:SetScript('OnDragStop',ui.StopMovingOrSizing)
@@ -738,6 +743,7 @@ local function createUI()
   for c=1,3 do
     local x=starts[c];local w=widths[c]
     local panel=CreateFrame('Frame',nil,ui,'BackdropTemplate');panel:SetPoint('TOPLEFT',x,-131);panel:SetSize(w,380);style(panel)
+    ui.pages[c]=panel
     local heading=makeText(panel,9,-7,w-18,21,true);heading:SetText(({'BERUFE','HANDWERKER','REZEPTBUCH'})[c]);ui.headers[c]=heading
     ui.columns[c]={}
     for i=1,ROWS do
@@ -766,6 +772,14 @@ local function createUI()
     end)
   end
   local detailPanel=CreateFrame('Frame',nil,ui,'BackdropTemplate');detailPanel:SetPoint('TOPLEFT',18,-521);detailPanel:SetSize(934,107);style(detailPanel)
+  ui.detailPanel=detailPanel
+  detailPanel:EnableMouseWheel(true)
+  detailPanel:SetScript('OnMouseWheel',function(_,delta)
+    if #activeMaterials<=materialColumns then return end
+    local maxOffset=math.max(0,math.ceil(#activeMaterials/materialColumns)-1)
+    materialOffset=math.max(0,math.min(maxOffset,materialOffset-(delta>0 and 1 or -1)))
+    if renderUI then renderUI() end
+  end)
   local detail=makeText(detailPanel,12,-7,905,92);resizeFont(detail,14);detail:SetJustifyV('TOP');detail:SetJustifyH('LEFT');detail:SetWordWrap(true);detail:SetText('Rezept auswählen, um Materialien zu sehen.');ui.detail=detail
   ui.materialButtons={}
   -- Two readable rows of materials, with native item tooltips.
@@ -773,7 +787,7 @@ local function createUI()
     local b=CreateFrame('Button',nil,detailPanel)
     local col=(i-1)%4
     local row=math.floor((i-1)/4)
-    b:SetSize(225,49);b:SetPoint('TOPLEFT',detailPanel,'TOPLEFT',12+col*230,-28-row*48)
+    b:SetSize(225,45);b:SetPoint('TOPLEFT',detailPanel,'TOPLEFT',12+col*230,-30-row*48)
     local texture=b:CreateTexture(nil,'ARTWORK');texture:SetSize(40,40);texture:SetPoint('LEFT',b,'LEFT',0,0)
     local quantity=b:CreateFontString(nil,'OVERLAY','GameFontHighlight');quantity:SetPoint('LEFT',texture,'RIGHT',5,0);resizeFont(quantity,14)
     quantity:SetWidth(185);quantity:SetJustifyH('LEFT')
@@ -788,19 +802,95 @@ local function createUI()
     b:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
     ui.materialButtons[i]=b
   end
+  ui.materialScrollHint=makeText(detailPanel,12,-87,300,15)
+  resizeFont(ui.materialScrollHint,11)
+  ui.materialScrollHint:SetText('')
+  -- Subtle profession-themed watermark using built-in WoW textures (no external assets).
+  ui.professionWatermark=ui.pages[3]:CreateTexture(nil,'BACKGROUND')
+  ui.professionWatermark:SetSize(220,220)
+  ui.professionWatermark:SetPoint('BOTTOMRIGHT',ui.pages[3],'BOTTOMRIGHT',-15,12)
+  ui.professionWatermark:SetAlpha(0.075)
   -- Persistent bottom status bar, visible even while idle.
   ui.progressBack=CreateFrame('StatusBar',nil,ui)
   ui.progressBack:SetPoint('BOTTOMLEFT',18,8);ui.progressBack:SetSize(934,7)
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.6.9'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.1'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
   ui.versionLabel:SetJustifyH('RIGHT')
   ui.versionLabel:SetText('|cff938c81v'..tostring(version):gsub('^v','')..'|r')
+  -- Native resize grip: the UI is reflowed, not uniformly scaled.
+  local grip=CreateFrame('Button',nil,ui)
+  grip:SetSize(20,20);grip:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-5,5)
+  grip:SetFrameLevel(ui:GetFrameLevel()+12)
+  local gripTexture=grip:CreateTexture(nil,'OVERLAY')
+  gripTexture:SetAllPoints()
+  gripTexture:SetTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up')
+  grip:SetNormalTexture(gripTexture)
+  grip:SetScript('OnMouseDown',function(self,button)
+    if button=='LeftButton' then ui:StartSizing('BOTTOMRIGHT') end
+  end)
+  grip:SetScript('OnMouseUp',function()
+    ui:StopMovingOrSizing()
+    if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()+0.5) end
+  end)
+  ui.resizeGrip=grip
+  local function layout()
+    local width,height=ui:GetWidth(),ui:GetHeight()
+    local inner=width-36
+    local gap=12
+    local left=math.floor((inner-2*gap)*0.255)
+    local mid=left
+    local right=inner-2*gap-left-mid
+    local xs={18,18+left+gap,18+left+gap+mid+gap}
+    local ws={left,mid,right}
+    local materialHeight=112
+    local columnHeight=math.max(200,height-131-materialHeight-26)
+    visibleRows=math.max(1,math.min(ROWS,math.floor((columnHeight-39)/26)))
+    for c=1,3 do
+      local panel=ui.pages[c]
+      panel:ClearAllPoints();panel:SetPoint('TOPLEFT',ui,'TOPLEFT',xs[c],-131)
+      panel:SetSize(ws[c],columnHeight)
+      ui.headers[c]:SetWidth(ws[c]-18)
+      for i,row in ipairs(ui.columns[c]) do
+        row:SetWidth(ws[c]-16)
+        row.label:SetWidth(ws[c]-34)
+      end
+    end
+    ui.detailPanel:ClearAllPoints()
+    ui.detailPanel:SetPoint('TOPLEFT',ui,'TOPLEFT',18,-131-columnHeight-10)
+    ui.detailPanel:SetSize(inner,materialHeight)
+    ui.detail:SetWidth(inner-26)
+    ui.progressBack:SetWidth(inner)
+    materialColumns=math.max(1,math.floor((inner-20)/225))
+    materialColumns=math.min(6,materialColumns)
+    local cellWidth=(inner-24)/materialColumns
+    for i,b in ipairs(ui.materialButtons) do
+      local col=(i-1)%materialColumns
+      local row=math.floor((i-1)/materialColumns)
+      b:ClearAllPoints()
+      b:SetPoint('TOPLEFT',ui.detailPanel,'TOPLEFT',12+col*cellWidth,-30-row*48)
+      b:SetSize(cellWidth-3,44)
+      b.quantity:SetWidth(math.max(45,cellWidth-49))
+    end
+    ui.materialScrollHint:ClearAllPoints()
+    ui.materialScrollHint:SetPoint('BOTTOMLEFT',ui.detailPanel,'BOTTOMLEFT',12,3)
+    ui.materialScrollHint:SetWidth(inner-45)
+    if renderUI and db then renderUI() end
+  end
+  ui.layout=layout
+  ui:SetScript('OnSizeChanged',function()
+    layout()
+    if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()+0.5) end
+  end)
+  if db and db.windowWidth and db.windowHeight then
+    ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655)))
+  end
+  layout()
   ui.statusElapsed=0
-  ui:SetScript('OnUpdate',function(self,dt)
+  ui:SetScript('OnUpdate' ,function(self,dt)
     self.statusElapsed=self.statusElapsed+dt
     if self.statusElapsed<0.3 then return end
     self.statusElapsed=0
@@ -820,10 +910,10 @@ local function matches(str)
   return searchText=='' or tostring(str or ''):lower():find(searchText:lower(),1,true)~=nil
 end
 local function setButtons(column,items,callback,selected)
-  local maxOffset=math.max(0,#items-ROWS)
+  local maxOffset=math.max(0,#items-visibleRows)
   offsets[column]=math.min(offsets[column] or 0,maxOffset)
   for i,row in ipairs(ui.columns[column]) do
-    local entry=items[i+offsets[column]]
+    local entry=(i<=visibleRows) and items[i+offsets[column]] or nil
     if entry then
       if row.rank then
         local v=entry.recipe and (tonumber(entry.recipe.trivialLevel) or tonumber(entry.recipe.skill))
@@ -891,8 +981,11 @@ renderUI=function()
       end
     end
   end
-  local names={};for name in pairs(professionMap) do names[#names+1]=name end;table.sort(names)
+  local names={};for name in pairs(professionMap) do names[#names+1]=name end
+  table.sort(names,function(a,b) return tostring(a):lower()<tostring(b):lower() end)
+  local professionTextures={['Ingenieurskunst']='Interface\\Icons\\Trade_Engineering',['Kochkunst']='Interface\\Icons\\INV_Misc_Food_15',['Lederverarbeitung']='Interface\\Icons\\Trade_LeatherWorking',['Schmiedekunst']='Interface\\Icons\\Trade_BlackSmithing',['Alchemie']='Interface\\Icons\\Trade_Alchemy',['Schneiderei']='Interface\\Icons\\Trade_Tailoring',['Verzauberkunst']='Interface\\Icons\\Trade_Engraving',['Juwelenschleifen']='Interface\\Icons\\INV_Misc_Gem_01',['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01']
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
+  if ui.professionWatermark then ui.professionWatermark:SetTexture(professionTextures[chosenProfession] or 'Interface\\Icons\\INV_Misc_Book_09') end
   local pitems={}
   for _,name in ipairs(names) do
     local include=matches(name)
@@ -955,17 +1048,22 @@ renderUI=function()
   end
   setButtons(3,ritems,function(e)
     if e.category then collapsedCategories[e.category]=not collapsedCategories[e.category];offsets[3]=0
-    elseif e.recipe then chosenRecipe=e.recipe.id end
+    elseif e.recipe then if chosenRecipe~=e.recipe.id then materialOffset=0 end;chosenRecipe=e.recipe.id end
     renderUI()
   end,chosenRecipe)
   unresolvedMaterials=false
   for _,button in ipairs(ui.materialButtons or {}) do button:Hide();button.itemID=nil end
+  activeMaterials=active and (active.materials or {}) or {}
+  local visibleMaterialCount=materialColumns*1 -- one full row; scroll to later rows
   if active then
-    local mats=active.materials or {}
+    local mats=activeMaterials
+    local maxMaterialOffset=math.max(0,math.ceil(#mats/materialColumns)-1)
+    materialOffset=math.min(materialOffset,maxMaterialOffset)
     ui.detail:SetText('|cffffd27a'..active.name..'|r  |cff91a79d• '..#mats..' Materialeinträge|r')
-    for i,m in ipairs(mats) do
+    for i=1,math.min(visibleMaterialCount,#mats-materialOffset*materialColumns) do
+      local m=mats[materialOffset*materialColumns+i]
       local button=ui.materialButtons[i]
-      if button then
+      if button and m then
         local itemName,icon=materialInfo(m.id)
         button.texture:SetTexture(icon or 'Interface\\Icons\\INV_Misc_QuestionMark')
         button.texture:SetTexCoord(0,1,0,1)
@@ -978,6 +1076,9 @@ renderUI=function()
         if not itemName or not icon then unresolvedMaterials=true end
       end
     end
+    if #mats>materialColumns then
+      ui.materialScrollHint:SetText('|cffbba983Mausrad: Materialien  •  Zeile '..(materialOffset+1)..'/'..math.ceil(#mats/materialColumns)..'|r')
+    else ui.materialScrollHint:SetText('') end
     if #mats==0 then ui.detail:SetText('|cffffd27a'..active.name..'|r  |cff91a79d• Keine Materialdaten gespeichert|r') end
   elseif selected and #recipes==0 then
     if chosenCharacter==who() then
@@ -986,6 +1087,7 @@ renderUI=function()
       ui.detail:SetText('|cffffd27aFür '..tostring(chosenCharacter)..' sind noch keine '..tostring(chosenProfession)..'-Rezepte gespeichert.|r\n'..tostring(chosenCharacter)..' muss das originale WoW-Berufsfenster öffnen\nund im Addon auf "Scannen" klicken.\nAnschließend die Berufsdaten über "Synchronisieren" übertragen.')
     end
   else ui.detail:SetText('Rezept auswählen, um Materialien zu sehen.') end
+  if not active then ui.materialScrollHint:SetText('') end
 end
 
 -- Minimap launcher: no external libraries required.
@@ -1063,12 +1165,16 @@ frame:SetScript('OnEvent',function(_,event,...)
     SpucknapfBerufeDB=SpucknapfBerufeDB or {}
     db=SpucknapfBerufeDB
     db.characters=db.characters or {}; db.peers=db.peers or {}
+    if ui and ui.layout then
+      if db.windowWidth and db.windowHeight then ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655))) end
+      ui.layout()
+    end
     createMinimapButton()
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.6.9 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.1 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')

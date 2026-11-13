@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.6.9 (Testversion)
+SpucknapfBerufe v0.7.6 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -49,3 +49,10 @@ Dezente berufsspezifische WoW-Icon-Wasserzeichen im Rezeptbuch.
 Fenstergroesse wird in SavedVariables gespeichert.
 
 Hotfix v0.7.2: kompatible Resize-API-Abfrage fuer WoW-Clients.
+
+
+v0.7.6 TEST: Erste Design-Etappe: dunklere warme Flaechen, Titelband,
+staerkerer Goldrand und lokale Goldrahmen an den drei Spalten und Materialien.
+Berufsillustrationen und Buttons werden in einer folgenden Etappe verfeinert.
+Scan, Synchronisation, SavedVariables und Resize-Logik unveraendert.
+Statische Lua-5.1-Syntaxpruefung; noch nicht im WoW-Client getestet.

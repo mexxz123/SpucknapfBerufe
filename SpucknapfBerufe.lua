@@ -642,15 +642,53 @@ local function makeText(parent,x,y,w,h,large)
 end
 local function style(f,border)
   if f.SetBackdrop then
-    -- Only the outer window has an ornate edge. Interior surfaces are deliberately quiet.
+    -- Dark warm surfaces; separate decorative textures frame the panels.
     f:SetBackdrop({bgFile='Interface\\Buttons\\WHITE8X8',
       edgeFile=border and 'Interface\\DialogFrame\\UI-DialogBox-Border' or nil,
       tile=false,edgeSize=border and 22 or 0,
       insets={left=border and 6 or 0,right=border and 6 or 0,top=border and 6 or 0,bottom=border and 6 or 0}})
-    f:SetBackdropColor(border and 0.075 or 0.13,border and 0.072 or 0.115,border and 0.065 or 0.095,1)
+    f:SetBackdropColor(border and 0.065 or 0.095,border and 0.045 or 0.070,border and 0.028 or 0.045,1)
     if border then f:SetBackdropBorderColor(0.51,0.40,0.25,0.95) end
   end
 end
+
+-- Decorative textures only: no mouse handlers or changes to profession data.
+local function decoratePanel(panel,header)
+  local goldPath='Interface\\AddOns\\SpucknapfBerufe\\Textures\\GoldFrame\\'
+  local function piece(file,a,b,x,y,w,h)
+    local t=panel:CreateTexture(nil,'BORDER')
+    t:SetTexture(goldPath..file);t:SetPoint(a,panel,b,x,y)
+    if w then t:SetWidth(w) end
+    if h then t:SetHeight(h) end
+    t:SetVertexColor(0.72,0.61,0.43,0.95)
+    return t
+  end
+  local top=piece('Horizontal','TOPLEFT','TOPLEFT',16,0,nil,5)
+  top:SetPoint('TOPRIGHT',panel,'TOPRIGHT',-16,0)
+  local bottom=piece('Horizontal','BOTTOMLEFT','BOTTOMLEFT',16,0,nil,5)
+  bottom:SetPoint('BOTTOMRIGHT',panel,'BOTTOMRIGHT',-16,0)
+  local left=piece('Vertical','TOPLEFT','TOPLEFT',0,-16,5,nil)
+  left:SetPoint('BOTTOMLEFT',panel,'BOTTOMLEFT',0,16)
+  local right=piece('Vertical','TOPRIGHT','TOPRIGHT',0,-16,5,nil)
+  right:SetPoint('BOTTOMRIGHT',panel,'BOTTOMRIGHT',0,16)
+  piece('CornerTL','TOPLEFT','TOPLEFT',0,0,20,20)
+  piece('CornerTR','TOPRIGHT','TOPRIGHT',0,0,20,20)
+  piece('CornerBL','BOTTOMLEFT','BOTTOMLEFT',0,0,20,20)
+  piece('CornerBR','BOTTOMRIGHT','BOTTOMRIGHT',0,0,20,20)
+  if header then
+    local band=panel:CreateTexture(nil,'BACKGROUND')
+    band:SetTexture('Interface\\Buttons\\WHITE8X8')
+    band:SetVertexColor(0.24,0.17,0.09,0.64)
+    band:SetPoint('TOPLEFT',panel,'TOPLEFT',5,-5)
+    band:SetPoint('TOPRIGHT',panel,'TOPRIGHT',-5,-5);band:SetHeight(25)
+    local rule=panel:CreateTexture(nil,'BORDER')
+    rule:SetTexture('Interface\\Buttons\\WHITE8X8')
+    rule:SetVertexColor(0.55,0.39,0.18,0.65)
+    rule:SetPoint('TOPLEFT',panel,'TOPLEFT',8,-30)
+    rule:SetPoint('TOPRIGHT',panel,'TOPRIGHT',-8,-30);rule:SetHeight(1)
+  end
+end
+
 local function createUI()
   if ui then return end
   ui=CreateFrame('Frame','SpucknapfBerufeWindow',UIParent,'BackdropTemplate')
@@ -667,6 +705,16 @@ local function createUI()
   ui:SetMovable(true);ui:EnableMouse(true)
   ui:RegisterForDrag('LeftButton');ui:SetScript('OnDragStart',ui.StartMoving);ui:SetScript('OnDragStop',ui.StopMovingOrSizing)
   style(ui,true)
+  local titleBand=ui:CreateTexture(nil,'BACKGROUND')
+  titleBand:SetTexture('Interface\\Buttons\\WHITE8X8')
+  titleBand:SetVertexColor(0.22,0.13,0.055,0.75)
+  titleBand:SetPoint('TOPLEFT',ui,'TOPLEFT',10,-10)
+  titleBand:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-10,-10);titleBand:SetHeight(31)
+  local titleRule=ui:CreateTexture(nil,'BORDER')
+  titleRule:SetTexture('Interface\\Buttons\\WHITE8X8')
+  titleRule:SetVertexColor(0.67,0.46,0.19,0.8)
+  titleRule:SetPoint('TOPLEFT',ui,'TOPLEFT',17,-42)
+  titleRule:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-17,-42);titleRule:SetHeight(1)
   -- Nine-piece fantasy gold border: corner images stay fixed while the edges
   -- stretch with the window. The content and resize grip remain untouched.
   local goldPath='Interface\\AddOns\\SpucknapfBerufe\\Textures\\GoldFrame\\'
@@ -682,13 +730,13 @@ local function createUI()
   borderPart('CornerBL','BOTTOMLEFT','BOTTOMLEFT',-3,-3,52,52)
   borderPart('CornerBR','BOTTOMRIGHT','BOTTOMRIGHT',3,-3,52,52)
   local topEdge=ui:CreateTexture(nil,'BORDER');topEdge:SetTexture(goldPath..'Horizontal')
-  topEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',46,3);topEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-46,3);topEdge:SetHeight(12)
+  topEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',46,3);topEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-46,3);topEdge:SetHeight(16)
   local bottomEdge=ui:CreateTexture(nil,'BORDER');bottomEdge:SetTexture(goldPath..'Horizontal')
-  bottomEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',46,-3);bottomEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-46,-3);bottomEdge:SetHeight(12)
+  bottomEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',46,-3);bottomEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-46,-3);bottomEdge:SetHeight(16)
   local leftEdge=ui:CreateTexture(nil,'BORDER');leftEdge:SetTexture(goldPath..'Vertical')
-  leftEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',-3,-46);leftEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',-3,46);leftEdge:SetWidth(12)
+  leftEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',-3,-46);leftEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',-3,46);leftEdge:SetWidth(16)
   local rightEdge=ui:CreateTexture(nil,'BORDER');rightEdge:SetTexture(goldPath..'Vertical')
-  rightEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',3,-46);rightEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',3,46);rightEdge:SetWidth(12)
+  rightEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',3,-46);rightEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',3,46);rightEdge:SetWidth(16)
   local title=makeText(ui,18,-12,810,27,true);title:SetText('|cffffd27aSpucknapfBerufe|r  |cffb7a080Der salzige Spucknapf|r')
   local close=CreateFrame('Button',nil,ui,'UIPanelCloseButton');close:SetPoint('TOPRIGHT',-3,-3)
   local hint=makeText(ui,18,-41,910,17);hint:SetText('|cffc5b394Beruf  /  Handwerker  /  Rezeptbuch     •     Gespeicherte Gildendaten|r')
@@ -772,6 +820,7 @@ local function createUI()
   for c=1,3 do
     local x=starts[c];local w=widths[c]
     local panel=CreateFrame('Frame',nil,ui,'BackdropTemplate');panel:SetPoint('TOPLEFT',x,-131);panel:SetSize(w,380);style(panel)
+    decoratePanel(panel,true)
     ui.pages[c]=panel
     local heading=makeText(panel,9,-7,w-18,21,true);heading:SetText(({'BERUFE','HANDWERKER','REZEPTBUCH'})[c]);ui.headers[c]=heading
     ui.columns[c]={}
@@ -808,6 +857,7 @@ local function createUI()
     end)
   end
   local detailPanel=CreateFrame('Frame',nil,ui,'BackdropTemplate');detailPanel:SetPoint('TOPLEFT',18,-521);detailPanel:SetSize(934,107);style(detailPanel)
+  decoratePanel(detailPanel,false)
   ui.detailPanel=detailPanel
   detailPanel:EnableMouseWheel(true)
   detailPanel:SetScript('OnMouseWheel',function(_,delta)
@@ -857,7 +907,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.4'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.6'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
   ui.versionLabel:SetJustifyH('RIGHT')

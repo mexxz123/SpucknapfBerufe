@@ -768,7 +768,7 @@ local function createUI()
         row.rank=rank
       end
       row:SetScript('OnEnter',function(self) if self.SetBackdropColor then self:SetBackdropColor(0.22,0.17,0.10,1) end end)
-      row:SetScript('OnLeave',function(self) if self.SetBackdropColor then self:SetBackdropColor(0.10,0.085,0.065,1) end end)
+      row:SetScript('OnLeave',function(self) if self.SetBackdropColor then self:SetBackdropColor(0.10,0.085,0.065,0.88) end end)
       ui.columns[c][i]=row
     end
     -- No pagination footer: the final recipe row must remain unobstructed.
@@ -812,18 +812,23 @@ local function createUI()
   ui.materialScrollHint=makeText(detailPanel,12,-87,300,15)
   resizeFont(ui.materialScrollHint,11)
   ui.materialScrollHint:SetText('')
-  -- Subtle profession-themed watermark using built-in WoW textures (no external assets).
-  ui.professionWatermark=ui.pages[3]:CreateTexture(nil,'BACKGROUND')
-  ui.professionWatermark:SetSize(220,220)
-  ui.professionWatermark:SetPoint('BOTTOMRIGHT',ui.pages[3],'BOTTOMRIGHT',-15,12)
-  ui.professionWatermark:SetAlpha(0.075)
+  -- Original, low-contrast sepia profession illustrations, stored locally as TGA.
+  -- ARTWORK on the parent sits behind child buttons; their backdrops remain readable.
+  ui.professionWatermarks={}
+  for _,column in ipairs({2,3}) do
+    local watermark=ui.pages[column]:CreateTexture(nil,'ARTWORK')
+    watermark:SetPoint('CENTER',ui.pages[column],'CENTER',0,-10)
+    watermark:SetSize(255,255)
+    watermark:SetAlpha(column==2 and 0.28 or 0.38)
+    ui.professionWatermarks[#ui.professionWatermarks+1]=watermark
+  end
   -- Persistent bottom status bar, visible even while idle.
   ui.progressBack=CreateFrame('StatusBar',nil,ui)
   ui.progressBack:SetPoint('BOTTOMLEFT',18,8);ui.progressBack:SetSize(934,7)
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.1'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.4'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -933,7 +938,7 @@ local function setButtons(column,items,callback,selected)
       end
       if row.SetBackdropColor then
         if isSelected then row:SetBackdropColor(0.12,0.29,0.24,0.92)
-        else row:SetBackdropColor(0.10,0.085,0.065,1) end
+        else row:SetBackdropColor(0.10,0.085,0.065,0.88) end
       end
       if row.SetBackdropBorderColor then
         if isSelected then row:SetBackdropBorderColor(0.38,0.78,0.63,1)
@@ -969,7 +974,7 @@ local function setButtons(column,items,callback,selected)
       row:SetScript('OnLeave',function(self)
         if self.SetBackdropColor then
           if self.isSelected then self:SetBackdropColor(0.12,0.29,0.24,0.92)
-          else self:SetBackdropColor(0.10,0.085,0.065,1) end
+          else self:SetBackdropColor(0.10,0.085,0.065,0.88) end
         end
         if GameTooltip then GameTooltip:Hide() end
       end)
@@ -990,9 +995,17 @@ renderUI=function()
   end
   local names={};for name in pairs(professionMap) do names[#names+1]=name end
   table.sort(names,function(a,b) return tostring(a):lower()<tostring(b):lower() end)
-  local professionTextures={['Ingenieurskunst']='Interface\\Icons\\Trade_Engineering',['Kochkunst']='Interface\\Icons\\INV_Misc_Food_15',['Lederverarbeitung']='Interface\\Icons\\Trade_LeatherWorking',['Schmiedekunst']='Interface\\Icons\\Trade_BlackSmithing',['Alchemie']='Interface\\Icons\\Trade_Alchemy',['Schneiderei']='Interface\\Icons\\Trade_Tailoring',['Verzauberkunst']='Interface\\Icons\\Trade_Engraving',['Juwelenschleifen']='Interface\\Icons\\INV_Misc_Gem_01',['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01'}
+  local professionTextures={['Ingenieurskunst']='Engineering',['Kochkunst']='Cooking',['Lederverarbeitung']='Leatherworking',['Schmiedekunst']='Blacksmithing',['Alchemie']='Alchemy',['Schneiderei']='Tailoring',['Verzauberkunst']='Enchanting',['Juwelenschleifen']='Jewelcrafting',['Inschriftenkunde']='Inscription'}
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
-  if ui.professionWatermark then ui.professionWatermark:SetTexture(professionTextures[chosenProfession] or 'Interface\\Icons\\INV_Misc_Book_09') end
+  if ui.professionWatermarks then
+    local textureName=professionTextures[chosenProfession]
+    for _,watermark in ipairs(ui.professionWatermarks) do
+      if textureName then
+        watermark:SetTexture('Interface\\AddOns\\SpucknapfBerufe\\Textures\\'..textureName)
+        watermark:Show()
+      else watermark:Hide() end
+    end
+  end
   local pitems={}
   for _,name in ipairs(names) do
     local include=matches(name)

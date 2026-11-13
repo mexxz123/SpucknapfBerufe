@@ -655,12 +655,12 @@ end
 -- Continuous inset borders: fixed thickness, no corner images or stretched joins.
 local function drawGoldFrame(panel,outer)
   local function ring(inset,size,r,g,b)
-    local function strip(a,b,x,y,w,h)
+    local function strip(pointA,pointB,x,y,w,h)
       local t=panel:CreateTexture(nil,'BORDER')
       t:SetTexture('Interface\\Buttons\\WHITE8X8')
       t:SetVertexColor(r,g,b,1)
-      t:SetPoint(a,panel,a,x,y)
-      t:SetPoint(b,panel,b,w,h)
+      t:SetPoint(pointA,panel,pointA,x,y)
+      t:SetPoint(pointB,panel,pointB,w,h)
       return t
     end
     local top=strip('TOPLEFT','TOPRIGHT',inset,-inset,-inset,-inset)
@@ -904,7 +904,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.9'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.10'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-42,18)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1327,7 +1327,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.9 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.10 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')

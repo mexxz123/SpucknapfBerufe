@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.9 (Testversion)
+SpucknapfBerufe v0.7.10 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -75,3 +75,9 @@ Fenstergroesse und Bildschirmposition bleiben dabei erhalten.
 Die Hinweiszeile unter dem Gildenheader entfaellt.
 Bitte ersten Resize nach /reload, Min-/Max-Groesse und Wiedereroeffnen testen.
 Statisch geprueft; der Fix muss im WoW-Client bestaetigt werden.
+
+
+v0.7.10 HOTFIX: Variablenueberschattung im Goldrahmen behoben.
+Vorher String statt Blau-Farbwert in SetVertexColor: UI-Aufbau brach ab.
+Fehler in Lua-Laufzeit mit UI-Mocks reproduziert; korrigierte Rahmen bestehen.
+Vollstaendige Lua-5.1-Syntaxpruefung bestanden. Kein WoW-Client-Test.

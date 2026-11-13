@@ -14,12 +14,47 @@ local syncConfirmed=false
 local retryAt=0
 local transferCounter=0
 local lastTransferNotice=0
-local SEND_INTERVAL=0.16 -- throttled guild addon messages, previously 0.32
-local ACK_WAIT=55 -- allow packet repair and receiver processing
+local SEND_INTERVAL=0.10 -- cautiously faster; keep throttling guild addon messages
+local ACK_WAIT=40 -- allow packet repair and receiver processing
 local lastRecipeSignature=nil
 local activeProfession=nil
 local ui, renderUI
 local selectedScanProfession=nil
+local itemRefreshElapsed=0
+local unresolvedMaterials=false
+local itemLoadRequested={}
+local function materialInfo(itemID)
+  itemID=tonumber(itemID)
+  if not itemID then return nil,nil end
+  local name,icon
+  if type(GetItemInfo)=='function' then
+    local ok,n,_,_,_,_,_,_,_,tex=pcall(GetItemInfo,itemID)
+    if ok then name=n;icon=tex end
+  end
+  if not name and C_Item and type(C_Item.GetItemNameByID)=='function' then
+    local ok,n=pcall(C_Item.GetItemNameByID,itemID)
+    if ok then name=n end
+  end
+  if not icon and type(GetItemIcon)=='function' then
+    local ok,tex=pcall(GetItemIcon,itemID)
+    if ok then icon=tex end
+  end
+  if not icon and type(GetItemInfoInstant)=='function' then
+    local ok,_,_,_,_,tex=pcall(GetItemInfoInstant,itemID)
+    if ok then icon=tex end
+  end
+  if not icon and C_Item and type(C_Item.GetItemIconByID)=='function' then
+    local ok,tex=pcall(C_Item.GetItemIconByID,itemID)
+    if ok then icon=tex end
+  end
+  if (not name or not icon) and not itemLoadRequested[itemID] then
+    itemLoadRequested[itemID]=true
+    if C_Item and type(C_Item.RequestLoadItemDataByID)=='function' then
+      pcall(C_Item.RequestLoadItemDataByID,itemID)
+    end
+  end
+  return name,icon
+end
 local function countPeers() local n=0; if db and db.peers then for _ in pairs(db.peers) do n=n+1 end end; return n end
 local function say(s) DEFAULT_CHAT_FRAME:AddMessage('|cff55cc88[SpucknapfBerufe]|r '..tostring(s)) end
 local function clock() return (GetTime and GetTime()) or 0 end
@@ -700,6 +735,11 @@ local function createUI()
       local row=CreateFrame('Button',nil,panel,'BackdropTemplate');row:SetSize(w-16,25);row:SetPoint('TOPLEFT',8,-34-(i-1)*26);style(row,false)
       local label=makeText(row,7,-2,w-28,20);resizeFont(label,14);row.label=label
       if c==3 then
+        local marker=row:CreateFontString(nil,'OVERLAY','GameFontHighlight')
+        marker:SetPoint('LEFT',row,'LEFT',5,0);marker:SetWidth(12)
+        marker:SetText('|cff8debc9>|r');marker:Hide();row.selectionMarker=marker
+      end
+      if c==3 then
         local rank=row:CreateFontString(nil,'OVERLAY','GameFontHighlight')
         rank:SetPoint('RIGHT',row,'RIGHT',-10,0)
         rank:SetWidth(54);rank:SetJustifyH('RIGHT');resizeFont(rank,14)
@@ -745,7 +785,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.6.7'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.6.8'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -780,12 +820,27 @@ local function setButtons(column,items,callback,selected)
         local v=entry.recipe and (tonumber(entry.recipe.trivialLevel) or tonumber(entry.recipe.skill))
         row.rank:SetText('') -- Schwierigkeit bleibt nur fuer Sortierung gespeichert
       end
-      row.label:SetText((entry.category and '|cffffd27a' or entry.key==selected and '|cff75dbab' or '|cffe8ddc6')..entry.label..'|r')
+      local isSelected=(not entry.category and entry.key==selected)
+      row.isSelected=isSelected
+      if row.selectionMarker then
+        if isSelected then row.selectionMarker:Show() else row.selectionMarker:Hide() end
+      end
+      if row.SetBackdropColor then
+        if isSelected then row:SetBackdropColor(0.12,0.29,0.24,0.92)
+        else row:SetBackdropColor(0.10,0.085,0.065,1) end
+      end
+      if row.SetBackdropBorderColor then
+        if isSelected then row:SetBackdropBorderColor(0.38,0.78,0.63,1)
+        else row:SetBackdropBorderColor(0.25,0.22,0.17,1) end
+      end
+      row.label:ClearAllPoints()
+      row.label:SetPoint('TOPLEFT',row,'TOPLEFT',isSelected and 20 or 7,-2)
+      row.label:SetText((entry.category and '|cffffd27a' or isSelected and '|cffb8ffe4' or '|cffe8ddc6')..entry.label..'|r')
       row:Show();row:SetScript('OnClick',function() callback(entry) end)
       row.recipeID=entry.recipe and entry.recipe.id or nil
       row.craftedItemID=entry.recipe and entry.recipe.craftedItemID or nil
       row:SetScript('OnEnter',function(self)
-        if self.SetBackdropColor then self:SetBackdropColor(0.22,0.17,0.10,1) end
+        if self.SetBackdropColor and not self.isSelected then self:SetBackdropColor(0.22,0.17,0.10,1) end
         -- Show the crafted ITEM tooltip, never the recipe/spell tooltip.
         -- Do not show a recipe tooltip for enchants or unknown outputs.
         local itemID=tonumber(self.craftedItemID)
@@ -806,10 +861,13 @@ local function setButtons(column,items,callback,selected)
         end
       end)
       row:SetScript('OnLeave',function(self)
-        if self.SetBackdropColor then self:SetBackdropColor(0.10,0.085,0.065,1) end
+        if self.SetBackdropColor then
+          if self.isSelected then self:SetBackdropColor(0.12,0.29,0.24,0.92)
+          else self:SetBackdropColor(0.10,0.085,0.065,1) end
+        end
         if GameTooltip then GameTooltip:Hide() end
       end)
-    else row:Hide();row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
+    else row:Hide();row.isSelected=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
   end
 end
 renderUI=function()
@@ -888,6 +946,7 @@ renderUI=function()
     else chosenRecipe=e.recipe.id end
     renderUI()
   end,chosenRecipe)
+  unresolvedMaterials=false
   for _,button in ipairs(ui.materialButtons or {}) do button:Hide();button.itemID=nil end
   if active then
     local mats=active.materials or {}
@@ -895,16 +954,13 @@ renderUI=function()
     for i,m in ipairs(mats) do
       local button=ui.materialButtons[i]
       if button then
-        local icon=type(GetItemIcon)=='function' and GetItemIcon(m.id) or nil
-        if not icon and type(GetItemInfo)=='function' then
-          local _,_,_,_,_,_,_,_,_,texture=GetItemInfo(m.id)
-          icon=texture
-        end
+        local itemName,icon=materialInfo(m.id)
         button.texture:SetTexture(icon or 'Interface\\Icons\\INV_Misc_QuestionMark')
-        local itemName=type(GetItemInfo)=='function' and GetItemInfo(m.id) or nil
         button.quantity:SetText(tostring(m.qty)..'x '..(itemName or ('Item #'..tostring(m.id))))
         button.itemID=m.id
+        button.materialQty=m.qty
         button:Show()
+        if not itemName or not icon then unresolvedMaterials=true end
       end
     end
     if #mats==0 then ui.detail:SetText('|cffffd27a'..active.name..'|r  |cff91a79d• Keine Materialdaten gespeichert|r') end
@@ -985,6 +1041,7 @@ frame:RegisterEvent('TRADE_SKILL_SHOW')
 frame:RegisterEvent('TRADE_SKILL_LIST_UPDATE')
 frame:RegisterEvent('SKILL_LINES_CHANGED')
 frame:RegisterEvent('GUILD_ROSTER_UPDATE')
+frame:RegisterEvent('GET_ITEM_INFO_RECEIVED')
 frame:SetScript('OnEvent',function(_,event,...)
   if event=='ADDON_LOADED' then
     if ...~=addonName then return end
@@ -996,12 +1053,13 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.6.7 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.6.8 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
   elseif event=='CHAT_MSG_ADDON' then onMessage(...)
   elseif event=='GUILD_ROSTER_UPDATE' then migrateLocalAlias(who())
+  elseif event=='GET_ITEM_INFO_RECEIVED' then itemRefreshElapsed=1
   elseif event=='TRADE_SKILL_SHOW' or event=='TRADE_SKILL_LIST_UPDATE' then
     -- Forever does not reliably expose the active profession; only auto-capture
     -- recipes after the user has explicitly selected the profession via /spb scan.
@@ -1011,6 +1069,24 @@ frame:SetScript('OnEvent',function(_,event,...)
   end
 end)
 frame:SetScript('OnUpdate',function(_,dt)
+  itemRefreshElapsed=itemRefreshElapsed+dt
+  if unresolvedMaterials and itemRefreshElapsed>=1 then
+    itemRefreshElapsed=0
+    local stillMissing=false
+    itemLoadRequested={}
+    for _,button in ipairs(ui and ui.materialButtons or {}) do
+      if button:IsShown() and button.itemID then
+        local name,icon=materialInfo(button.itemID)
+        if name then
+          local qty=button.materialQty or 0
+          button.quantity:SetText(tostring(qty)..'x '..name)
+        end
+        if icon then button.texture:SetTexture(icon) end
+        if not name or not icon then stillMissing=true end
+      end
+    end
+    unresolvedMaterials=stillMissing
+  end
   elapsed=elapsed+dt
   if elapsed<SEND_INTERVAL then return end
   elapsed=0

@@ -37,3 +37,6 @@ Version 0.6.1: Ruestungssets werden vor Brust-Erkennung als Ruestungsverstaerkun
 Version 0.6.4: Originale Rezeptkategorien werden beim erneuten Scan per GetRecipeInfo(categoryID) und GetCategoryInfo ermittelt und gespeichert. Kategorie wird auch bei neuer Synchronisation mitgesendet. Alte gespeicherte Rezepte brauchen einen neuen Scan.
 
 Version 0.6.5: Sync-Test: Versandintervall 0.16s statt 0.32s, ACK-Wartezeit 55s, Reparaturanfragen mit groesserem Abstand, laengere Empfangsfenster. Protokoll SPB03 unveraendert. Zwei gleichzeitig eingeloggte Gildenmitglieder fuer Test erforderlich.
+
+
+v0.7.0 Test: Materialicons (GetItemIcon zuerst; GetItemInfo Texturposition korrigiert), mehrzeilige Scan-Hinweise sichtbar.

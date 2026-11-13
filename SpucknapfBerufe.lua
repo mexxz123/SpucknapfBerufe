@@ -27,31 +27,33 @@ local function materialInfo(itemID)
   itemID=tonumber(itemID)
   if not itemID then return nil,nil end
   local name,icon
+  -- The original v0.6.7 icon lookup worked on the author's client.
+  -- Prefer it, and only use other APIs if it returns no valid texture.
+  if type(GetItemIcon)=='function' then
+    local ok,tex=pcall(GetItemIcon,itemID)
+    if ok and (type(tex)=='number' or type(tex)=='string') then icon=tex end
+  end
   if type(GetItemInfo)=='function' then
-    local ok,n,_,_,_,_,_,_,_,tex=pcall(GetItemInfo,itemID)
-    if ok then name=n;icon=tex end
+    -- GetItemInfo returns texture as its TENTH result (after equipLoc).
+    local ok,n,_,_,_,_,_,_,_,_,tex=pcall(GetItemInfo,itemID)
+    if ok then
+      name=n
+      if not icon or icon==0 or icon=='' then icon=tex end
+    end
   end
   if not name and C_Item and type(C_Item.GetItemNameByID)=='function' then
     local ok,n=pcall(C_Item.GetItemNameByID,itemID)
     if ok then name=n end
   end
-  if (not icon or icon==0) and type(GetItemIcon)=='function' then
-    local ok,tex=pcall(GetItemIcon,itemID)
-    if ok then icon=tex end
-  end
-  if (not icon or icon==0) and type(GetItemInfoInstant)=='function' then
+  if (not icon or icon==0 or icon=='') and type(GetItemInfoInstant)=='function' then
     local ok,_,_,_,_,tex=pcall(GetItemInfoInstant,itemID)
     if ok then icon=tex end
   end
-  if (not icon or icon==0) and C_Item and type(C_Item.GetItemIconByID)=='function' then
+  if (not icon or icon==0 or icon=='') and C_Item and type(C_Item.GetItemIconByID)=='function' then
     local ok,tex=pcall(C_Item.GetItemIconByID,itemID)
     if ok then icon=tex end
   end
-  if not icon and type(GetItemInfo)=='function' then
-    local ok,_,_,_,_,_,_,_,_,_,tex=pcall(GetItemInfo,'item:'..itemID)
-    if ok and tex then icon=tex end
-  end
-  if (not name or not icon) and not itemLoadRequested[itemID] then
+  if (not name or not icon or icon==0 or icon=='') and not itemLoadRequested[itemID] then
     itemLoadRequested[itemID]=true
     if C_Item and type(C_Item.RequestLoadItemDataByID)=='function' then
       pcall(C_Item.RequestLoadItemDataByID,itemID)
@@ -59,6 +61,7 @@ local function materialInfo(itemID)
   end
   if type(icon)=='number' and icon<=0 then icon=nil end
   if type(icon)=='string' and icon=='' then icon=nil end
+  if type(icon)~='string' and type(icon)~='number' then icon=nil end
   return name,icon
 end
 local function countPeers() local n=0; if db and db.peers then for _ in pairs(db.peers) do n=n+1 end end; return n end
@@ -763,7 +766,7 @@ local function createUI()
     end)
   end
   local detailPanel=CreateFrame('Frame',nil,ui,'BackdropTemplate');detailPanel:SetPoint('TOPLEFT',18,-521);detailPanel:SetSize(934,107);style(detailPanel)
-  local detail=makeText(detailPanel,12,-7,905,23);resizeFont(detail,14);detail:SetText('Rezept auswählen, um Materialien zu sehen.');ui.detail=detail
+  local detail=makeText(detailPanel,12,-7,905,92);resizeFont(detail,14);detail:SetJustifyV('TOP');detail:SetJustifyH('LEFT');detail:SetWordWrap(true);detail:SetText('Rezept auswählen, um Materialien zu sehen.');ui.detail=detail
   ui.materialButtons={}
   -- Two readable rows of materials, with native item tooltips.
   for i=1,8 do
@@ -948,7 +951,7 @@ renderUI=function()
     end
   end
   if selected and #recipes==0 then
-    ritems[1]={label='Keine Rezepte gespeichert',key='empty-recipe-note'}
+    ritems[1]={label='Noch keine Rezepte gescannt',key='empty-recipe-note'}
   end
   setButtons(3,ritems,function(e)
     if e.category then collapsedCategories[e.category]=not collapsedCategories[e.category];offsets[3]=0
@@ -978,9 +981,9 @@ renderUI=function()
     if #mats==0 then ui.detail:SetText('|cffffd27a'..active.name..'|r  |cff91a79d• Keine Materialdaten gespeichert|r') end
   elseif selected and #recipes==0 then
     if chosenCharacter==who() then
-      ui.detail:SetText('|cffffd27aNoch keine Rezepte erfasst|r\nOeffne das originale Berufsfenster von World of Warcraft, in dem du deine Rezepte herstellst.\nKlicke anschliessend hier im Addon auf \"Scannen\", um deine erlernten Rezepte zu erfassen.\nMit \"Synchronisieren\" kannst du deine Berufsdaten danach mit anderen Gildenmitgliedern teilen.')
+      ui.detail:SetText('|cffffd27aNoch keine Rezepte für '..tostring(chosenProfession)..' gespeichert.|r\nÖffne das originale WoW-Berufsfenster für '..tostring(chosenProfession)..'.\nKlicke anschließend im Addon auf "Scannen", um deine Rezepte zu erfassen.\nMit "Synchronisieren" kannst du sie danach mit der Gilde teilen.')
     else
-      ui.detail:SetText('|cffffd27aKeine Rezepte verfuegbar|r\nFuer diesen Handwerker wurden noch keine Rezepte uebertragen.\nDas Gildenmitglied muss sein originales WoW-Berufsfenster oeffnen, im Addon auf \"Scannen\" klicken und anschliessend seine Berufsdaten synchronisieren.')
+      ui.detail:SetText('|cffffd27aFür '..tostring(chosenCharacter)..' sind noch keine '..tostring(chosenProfession)..'-Rezepte gespeichert.|r\n'..tostring(chosenCharacter)..' muss das originale WoW-Berufsfenster öffnen\nund im Addon auf "Scannen" klicken.\nAnschließend die Berufsdaten über "Synchronisieren" übertragen.')
     end
   else ui.detail:SetText('Rezept auswählen, um Materialien zu sehen.') end
 end

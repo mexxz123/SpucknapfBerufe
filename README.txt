@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.20 (Testversion)
+SpucknapfBerufe v0.7.22 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -164,3 +164,16 @@ echte Sende-API-Aufrufe, blockierte Versuche, API-Fehler/Rueckgaben und
 rohe CHAT_MSG_ADDON-Ereignisse vor Filterung. Kein bestaetigter Transportfix.
 Beide Clients aktualisieren, /spb ping, kurz warten, /spb syncstatus.
 Kein WoW-Client-Test.
+
+
+v0.7.21 TEST: Sendetimer behaelt Restzeit, statt sie je Paket zu verwerfen.
+Weiterhin hoechstens eine Nachricht pro Frame, keine Nachholschleifen.
+Empfangsbestaetigung sofort sichtbar; internes 3s-Fenster bleibt bestehen.
+Bestaetigung nennt Gesamtdauer, Erstversand und anschliessende Wartezeit
+sowie Versuchsanzahl. Protokoll, 0.06s-Intervall, ACK-/Reparaturlogik gleich.
+Keine gemessene Verbesserung im WoW-Client behauptet; Spieltest offen.
+
+
+v0.7.22: X-Button rechts im Suchfeld, sichtbar bei nichtleerer Suche.
+Ein Klick leert den Filter sofort; Fokus bleibt zum Weitertippen im Feld.
+Sonst gleicher Funktionsstand wie 0.7.21. Kein WoW-Client-Test.

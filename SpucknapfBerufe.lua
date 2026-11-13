@@ -542,6 +542,8 @@ local function buildSnapshot()
 end
 local function startTransfer(transfer)
   outgoing=transfer
+  outgoing.startedAt=outgoing.startedAt or clock()
+  outgoing.attemptStartedAt=clock()
   outgoing.receivedAtStart=syncStats.received
   outgoing.okAtStart=syncStats.ok
   outgoing.missAtStart=syncStats.miss
@@ -756,7 +758,12 @@ local function onMessage(prefix,payload,channel,sender)
     return
   end
   if kind=='OK' and outgoing and outgoing.seq==a[2] then
-    say('Empfang bestaetigt von '..name..' ('..#outgoing.messages..' Pakete).')
+    if not outgoing.acknowledged then
+      local now=clock()
+      local start=outgoing.startedAt or now
+      local sent=outgoing.firstSentAt or now
+      say(string.format('Empfang bestaetigt von %s (%d Pakete). Gesamt %.1fs: Erstversand %.1fs, danach %.1fs; %d Versuch(e).',name,#outgoing.messages,now-start,sent-start,now-sent,outgoing.attempts))
+    end
     -- Multiple guild members may be listening. Keep a short window for confirmations.
     outgoing.acknowledged=true;syncConfirmed=true;syncState='Empfang bestaetigt'
   elseif kind=='REQ' and a[2]==who() then
@@ -966,8 +973,27 @@ local function createUI()
   local search=CreateFrame('EditBox',nil,ui,'InputBoxTemplate');search:SetSize(350,24);search:SetPoint('TOPLEFT',18,-96)
   search:SetAutoFocus(false);search:SetMaxLetters(80);search:SetText('')
   local sl=makeText(ui,386,-99,150,20);sl:SetText('|cffb9a788Suche|r')
+  search:SetTextInsets(4,25,0,0)
+  local clearSearch=CreateFrame('Button',nil,search,'UIPanelCloseButton')
+  clearSearch:SetSize(20,20)
+  clearSearch:SetPoint('RIGHT',search,'RIGHT',-1,0)
+  clearSearch:Hide()
+  clearSearch:SetScript('OnClick',function()
+    search:SetText('')
+    search:SetFocus()
+  end)
+  clearSearch:SetScript('OnEnter',function(self)
+    if GameTooltip then
+      GameTooltip:SetOwner(self,'ANCHOR_TOP')
+      GameTooltip:SetText('Suche leeren')
+      GameTooltip:Show()
+    end
+  end)
+  clearSearch:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
   search:SetScript('OnTextChanged',function(self)
-    searchText=self:GetText() or '';offsets={0,0,0};if renderUI then renderUI() end
+    searchText=self:GetText() or ''
+    if searchText~='' then clearSearch:Show() else clearSearch:Hide();if GameTooltip then GameTooltip:Hide() end end
+    offsets={0,0,0};if renderUI then renderUI() end
   end)
   local sortButton=CreateFrame('Button',nil,ui,'UIPanelButtonTemplate')
   sortButton:SetSize(220,32);sortButton:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-18,-94)
@@ -1100,7 +1126,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.20'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.22'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1235,7 +1261,11 @@ local function createUI()
       local sent=math.max(0,#outgoing.messages-#queue)
       self.progressBack:SetMinMaxValues(0,math.max(1,#outgoing.messages))
       self.progressBack:SetValue(sent)
-      self.status:SetText('|cffddbb79'..(outgoing.sentAt and 'Warte auf Empfangsbestaetigung' or 'Senden')..': '..sent..'/'..#outgoing.messages..'|r')
+      if outgoing.acknowledged then
+        self.status:SetText('|cff8debc9Empfang bestaetigt|r')
+      else
+        self.status:SetText('|cffddbb79'..(outgoing.sentAt and 'Warte auf Empfangsbestaetigung' or 'Senden')..': '..sent..'/'..#outgoing.messages..'|r')
+      end
     else
       self.progressBack:SetMinMaxValues(0,1);self.progressBack:SetValue(syncConfirmed and 1 or 0)
       self.status:SetText('|cffbfa77a'..syncState..'|r')
@@ -1546,7 +1576,7 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     registerPrefix()
-    say('Testversion 0.7.20 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.22 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1591,13 +1621,16 @@ frame:SetScript('OnUpdate',function(_,dt)
   end
   elapsed=elapsed+dt
   if elapsed<SEND_INTERVAL then return end
-  elapsed=0
+  elapsed=elapsed%SEND_INTERVAL
   if #controlQueue>0 then
     local message=table.remove(controlQueue,1);controlQueued[message]=nil
     transmit(message)
   elseif #queue>0 then
     transmit(table.remove(queue,1))
-    if #queue==0 and outgoing then outgoing.sentAt=clock() end
+    if #queue==0 and outgoing then
+      outgoing.sentAt=clock()
+      outgoing.firstSentAt=outgoing.firstSentAt or outgoing.sentAt
+    end
   elseif outgoing and outgoing.sentAt then
     if outgoing.acknowledged then
       if clock()-outgoing.sentAt>3 then

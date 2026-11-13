@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: SpucknapfBerufe
 ## Notes: Gildenberufe und Rezeptbuch (Testversion)
-## Version: 0.7.20
+## Version: 0.7.22
 ## SavedVariables: SpucknapfBerufeDB
 SpucknapfBerufe.lua

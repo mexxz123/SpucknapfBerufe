@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.4.4 (Testversion)
+SpucknapfBerufe v0.6.7 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster

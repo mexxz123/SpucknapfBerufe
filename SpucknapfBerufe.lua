@@ -709,7 +709,7 @@ local function createUI()
       row:SetScript('OnLeave',function(self) if self.SetBackdropColor then self:SetBackdropColor(0.10,0.085,0.065,1) end end)
       ui.columns[c][i]=row
     end
-    local page=makeText(panel,8,-363,w-16,14);ui.pages[c]=page
+    -- No pagination footer: the final recipe row must remain unobstructed.
     panel:EnableMouseWheel(true)
     panel:SetScript('OnMouseWheel',function(_,delta)
       offsets[c]=math.max(0,(offsets[c] or 0)-(delta>0 and 1 or -1)*3)
@@ -745,6 +745,11 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.6.7'
+  ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
+  ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
+  ui.versionLabel:SetJustifyH('RIGHT')
+  ui.versionLabel:SetText('|cff938c81v'..tostring(version):gsub('^v','')..'|r')
   ui.statusElapsed=0
   ui:SetScript('OnUpdate',function(self,dt)
     self.statusElapsed=self.statusElapsed+dt
@@ -806,7 +811,6 @@ local function setButtons(column,items,callback,selected)
       end)
     else row:Hide();row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
   end
-  ui.pages[column]:SetText(#items==0 and '|cff788c83Keine Einträge|r' or ('|cff788c83'..(offsets[column]+1)..'–'..math.min(#items,offsets[column]+ROWS)..' / '..#items..'   •   Mausrad|r'))
 end
 renderUI=function()
 
@@ -992,7 +996,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.6.6 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.6.7 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')

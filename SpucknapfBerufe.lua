@@ -193,12 +193,39 @@ local function decode(s) return (s or ''):gsub('%%(%x%x)',function(h) return str
 local function split(s)
   local a={}; for part in (s..'|'):gmatch('(.-)|') do a[#a+1]=part end; return a
 end
+local transportStatus={calls=0,blocked=0,errors=0,api='-',result='-',registration='nicht versucht',raw=0,lastPrefix='-',lastChannel='-'}
+local function registerPrefix()
+  local api=C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix or RegisterAddonMessagePrefix
+  if type(api)~='function' then transportStatus.registration='API fehlt';return end
+  local ok,result=pcall(api,PREFIX)
+  transportStatus.registration=ok and tostring(result) or ('Fehler: '..tostring(result))
+end
 local function transmit(s)
   syncStats.sent=syncStats.sent+1
-  if not IsInGuild or not IsInGuild() then return end
+  if type(IsInGuild)~='function' then
+    transportStatus.blocked=transportStatus.blocked+1;transportStatus.result='IsInGuild fehlt';return
+  end
+  if not IsInGuild() then
+    transportStatus.blocked=transportStatus.blocked+1;transportStatus.result='IsInGuild=false';return
+  end
+  local api
   if C_ChatInfo and type(C_ChatInfo.SendAddonMessage)=='function' then
-    C_ChatInfo.SendAddonMessage(PREFIX,s,'GUILD')
-  elseif type(SendAddonMessage)=='function' then SendAddonMessage(PREFIX,s,'GUILD') end
+    api=C_ChatInfo.SendAddonMessage;transportStatus.api='C_ChatInfo'
+  elseif type(SendAddonMessage)=='function' then
+    api=SendAddonMessage;transportStatus.api='global'
+  else
+    transportStatus.blocked=transportStatus.blocked+1;transportStatus.result='Sende-API fehlt';return
+  end
+  transportStatus.calls=transportStatus.calls+1
+  local ok,result=pcall(api,PREFIX,s,'GUILD')
+  if not ok then transportStatus.errors=transportStatus.errors+1 end
+  transportStatus.result=ok and tostring(result) or ('Fehler: '..tostring(result))
+end
+local function reportTransport()
+  local guild=type(IsInGuild)=='function' and tostring(IsInGuild()) or 'API fehlt'
+  say('Transport: Gilde='..guild..', Prefix='..transportStatus.registration..', API='..transportStatus.api)
+  say('Versand: '..transportStatus.calls..' API-Aufrufe, '..transportStatus.blocked..' blockiert, '..transportStatus.errors..' Fehler. Rueckgabe: '..transportStatus.result)
+  say('Empfang roh: '..transportStatus.raw..', letzter Prefix='..transportStatus.lastPrefix..', Kanal='..transportStatus.lastChannel)
 end
 local function enqueue(s) if #s <= 240 then queue[#queue+1]=s; return true end; return false end
 -- Client-provided profession icons support names beyond the fallback table.
@@ -1073,7 +1100,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.19'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.20'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1518,13 +1545,16 @@ frame:SetScript('OnEvent',function(_,event,...)
     createMinimapButton()
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
-    if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
-    elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.19 geladen. /spb oeffnet das Fenster')
+    registerPrefix()
+    say('Testversion 0.7.20 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
-  elseif event=='CHAT_MSG_ADDON' then onMessage(...)
+  elseif event=='CHAT_MSG_ADDON' then
+    local rawPrefix,_,rawChannel=...
+    transportStatus.raw=transportStatus.raw+1
+    transportStatus.lastPrefix=tostring(rawPrefix);transportStatus.lastChannel=tostring(rawChannel)
+    onMessage(...)
   elseif event=='GUILD_ROSTER_UPDATE' then migrateLocalAlias(who())
   elseif event=='GET_ITEM_INFO_RECEIVED' then itemRefreshElapsed=1
   elseif event=='TRADE_SKILL_SHOW' or event=='TRADE_SKILL_LIST_UPDATE' then
@@ -1581,7 +1611,8 @@ frame:SetScript('OnUpdate',function(_,dt)
         startTransfer(outgoing)
       else
         say('Synchronisierung nicht bestaetigt. Bitte Empfaenger pruefen.')
-        say('Sync-Diagnose: '..(syncStats.received-(outgoing.receivedAtStart or 0))..' eingehende Nachrichten, '..(syncStats.ok-(outgoing.okAtStart or 0))..' OK, '..(syncStats.miss-(outgoing.missAtStart or 0))..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
+        reportTransport()
+    say('Sync-Diagnose: '..(syncStats.received-(outgoing.receivedAtStart or 0))..' eingehende Nachrichten, '..(syncStats.ok-(outgoing.okAtStart or 0))..' OK, '..(syncStats.miss-(outgoing.missAtStart or 0))..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
         syncState='Keine Empfangsbestaetigung';outgoing=nil
       end
     end
@@ -1764,6 +1795,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='categories' or cmd=='kategorien' then categoryProbe(arg)
   elseif cmd=='sync' then sendSnapshot(); say('Datenuebertragung geplant ('..(outgoing and #outgoing.messages or 0)..' Pakete). Bitte bis zur Empfangsbestaetigung warten.')
   elseif cmd=='syncstatus' then
+    reportTransport()
     say('Sync: '..syncStats.sent..' Sendeversuche, '..syncStats.received..' empfangen, '..syncStats.data..' Datenpakete, '..syncStats.ok..' OK, '..syncStats.miss..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
     local n=0;for sender,box in pairs(numberedPending) do n=n+1;say('Empfang von '..sender..': '..box.received..'/'..box.total..' Pakete') end
     if n==0 then say('Kein unvollstaendiger Empfang gespeichert.') end

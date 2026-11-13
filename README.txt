@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.19 (Testversion)
+SpucknapfBerufe v0.7.20 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -157,3 +157,10 @@ Optional /spb syncstatus auf Sender UND Empfaenger zeigt eingegangene
 Pakete und noch unvollstaendige Buecher. Nicht als bestaetigter Fix fuer
 den im Spiel beobachteten ACK-Ausfall zu verstehen.
 
+
+
+v0.7.20 DIAGNOSE: /spb syncstatus zeigt Prefix-Registrierung, Gildenstatus,
+echte Sende-API-Aufrufe, blockierte Versuche, API-Fehler/Rueckgaben und
+rohe CHAT_MSG_ADDON-Ereignisse vor Filterung. Kein bestaetigter Transportfix.
+Beide Clients aktualisieren, /spb ping, kurz warten, /spb syncstatus.
+Kein WoW-Client-Test.

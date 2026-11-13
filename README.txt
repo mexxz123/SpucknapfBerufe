@@ -47,3 +47,5 @@ Spalten und Listen passen sich an. Materialbereich: bei mehr als einer Zeile
 mit dem Mausrad ueber dem unteren Bereich blaettern. Berufsliste A-Z.
 Dezente berufsspezifische WoW-Icon-Wasserzeichen im Rezeptbuch.
 Fenstergroesse wird in SavedVariables gespeichert.
+
+Hotfix v0.7.2: kompatible Resize-API-Abfrage fuer WoW-Clients.

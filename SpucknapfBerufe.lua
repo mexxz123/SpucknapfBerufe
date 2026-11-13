@@ -655,7 +655,14 @@ local function createUI()
   if ui then return end
   ui=CreateFrame('Frame','SpucknapfBerufeWindow',UIParent,'BackdropTemplate')
   ui:SetSize(970,655);ui:SetPoint('CENTER');ui:SetClampedToScreen(true)
-  ui:SetResizable(true);ui:SetMinResize(740,490);ui:SetMaxResize(1600,1100)
+  -- WoW client builds expose different resize-bound APIs. Never abort UI creation.
+  if ui.SetResizable then ui:SetResizable(true) end
+  if ui.SetResizeBounds then
+    ui:SetResizeBounds(740,490,1600,1100)
+  else
+    if ui.SetMinResize then ui:SetMinResize(740,490) end
+    if ui.SetMaxResize then ui:SetMaxResize(1600,1100) end
+  end
   ui:SetFrameStrata('DIALOG');ui:SetFrameLevel(100);ui:SetToplevel(true)
   ui:SetMovable(true);ui:EnableMouse(true)
   ui:RegisterForDrag('LeftButton');ui:SetScript('OnDragStart',ui.StartMoving);ui:SetScript('OnDragStop',ui.StopMovingOrSizing)
@@ -830,7 +837,7 @@ local function createUI()
   gripTexture:SetTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up')
   grip:SetNormalTexture(gripTexture)
   grip:SetScript('OnMouseDown',function(self,button)
-    if button=='LeftButton' then ui:StartSizing('BOTTOMRIGHT') end
+    if button=='LeftButton' and ui.StartSizing then ui:StartSizing('BOTTOMRIGHT') end
   end)
   grip:SetScript('OnMouseUp',function()
     ui:StopMovingOrSizing()
@@ -983,7 +990,7 @@ renderUI=function()
   end
   local names={};for name in pairs(professionMap) do names[#names+1]=name end
   table.sort(names,function(a,b) return tostring(a):lower()<tostring(b):lower() end)
-  local professionTextures={['Ingenieurskunst']='Interface\\Icons\\Trade_Engineering',['Kochkunst']='Interface\\Icons\\INV_Misc_Food_15',['Lederverarbeitung']='Interface\\Icons\\Trade_LeatherWorking',['Schmiedekunst']='Interface\\Icons\\Trade_BlackSmithing',['Alchemie']='Interface\\Icons\\Trade_Alchemy',['Schneiderei']='Interface\\Icons\\Trade_Tailoring',['Verzauberkunst']='Interface\\Icons\\Trade_Engraving',['Juwelenschleifen']='Interface\\Icons\\INV_Misc_Gem_01',['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01']
+  local professionTextures={['Ingenieurskunst']='Interface\\Icons\\Trade_Engineering',['Kochkunst']='Interface\\Icons\\INV_Misc_Food_15',['Lederverarbeitung']='Interface\\Icons\\Trade_LeatherWorking',['Schmiedekunst']='Interface\\Icons\\Trade_BlackSmithing',['Alchemie']='Interface\\Icons\\Trade_Alchemy',['Schneiderei']='Interface\\Icons\\Trade_Tailoring',['Verzauberkunst']='Interface\\Icons\\Trade_Engraving',['Juwelenschleifen']='Interface\\Icons\\INV_Misc_Gem_01',['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01'}
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
   if ui.professionWatermark then ui.professionWatermark:SetTexture(professionTextures[chosenProfession] or 'Interface\\Icons\\INV_Misc_Book_09') end
   local pitems={}
@@ -1174,7 +1181,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.1 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.3 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')

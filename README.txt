@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.22 (Testversion)
+SpucknapfBerufe v0.8.1 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -177,3 +177,20 @@ Keine gemessene Verbesserung im WoW-Client behauptet; Spieltest offen.
 v0.7.22: X-Button rechts im Suchfeld, sichtbar bei nichtleerer Suche.
 Ein Klick leert den Filter sofort; Fokus bleibt zum Weitertippen im Feld.
 Sonst gleicher Funktionsstand wie 0.7.21. Kein WoW-Client-Test.
+
+
+v0.8.0 TEST: Minimap-Button ausserhalb der Karte, Abstand abhaengig
+von Kartengroesse und Skalierung. Ziehen speichert Winkel UND Abstand.
+Icon und neuer symmetrischer Goldring zentriert; kein asymmetrischer
+TrackingBorder-Atlas mehr. Alle Funktionen aus 0.7.22 enthalten.
+Noch nicht im WoW-Client getestet.
+
+
+v0.8.1 TEST: Button Gildendaten anfordern. Ein Klick fragt online
+befindliche Gildenmitglieder an; aktuelle Addons senden automatisch
+das eigene gespeicherte Rezeptbuch, zeitversetzt und ohne Neuscan.
+Sperrzeit 60 Sekunden fuer Anfragen/automatische Antworten. Laufende
+Uploads werden nicht abgebrochen. Offline-Charakterdaten werden nicht
+weitergereicht. Alle Teilnehmer benoetigen 0.8.1 fuer automatische Antworten.
+Optional /spb anfordern. Alle Funktionen aus 0.8.0 enthalten.
+Noch nicht im WoW-Client getestet.

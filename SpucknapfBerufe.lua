@@ -566,6 +566,71 @@ local function sendSnapshot()
     startTransfer(nextTransfer)
   end
 end
+-- Explicit guild-wide requests; replies contain only this character's own book.
+local GUILD_REQUEST_COOLDOWN=60
+local lastGuildRequest=nil
+local lastAutoReply=nil
+local guildRequestCounter=0
+local pendingGuildReply=nil
+local guildRequestSeen={}
+local lastIncomingDataAt=nil
+local function guildReplyDelay()
+  local key=playerKey() or who() or 'player'
+  local hash=0
+  for i=1,#key do hash=(hash*33+key:byte(i))%10007 end
+  return 2+(hash%700)/100
+end
+local function hasLocalRecipeBook()
+  if not db or not who() then return false end
+  migrateLocalAlias(who())
+  local record=db.characters[who()]
+  for _,p in ipairs(record and record.professions or {}) do
+    if not excluded[p.name] and p.complete and #(p.recipes or {})>0 then return true end
+  end
+  return false
+end
+local function requestGuildData()
+  if not db then return end
+  if type(IsInGuild)~='function' or not IsInGuild() then
+    say('Gildendaten koennen nur innerhalb einer Gilde angefordert werden.');return
+  end
+  local now=clock()
+  if lastGuildRequest and now-lastGuildRequest<GUILD_REQUEST_COOLDOWN then
+    say('Bitte noch '..math.ceil(GUILD_REQUEST_COOLDOWN-(now-lastGuildRequest))..' Sekunden bis zur naechsten Anfrage warten.');return
+  end
+  guildRequestCounter=guildRequestCounter+1
+  local id=tostring(playerKey() or 'request')..'-'..tostring(math.floor(now*100))..'-'..guildRequestCounter
+  local message='GREQ|'..id..'|'..encode(playerKey() or '')
+  enqueueControl(message)
+  if not controlQueued[message] then say('Sendewarteschlange belegt. Bitte gleich erneut versuchen.');return end
+  lastGuildRequest=now
+  syncState='Gildendaten angefordert'
+  say('Gildendaten angefordert. Online-Handwerker mit aktueller Addon-Version antworten automatisch; bitte etwas warten.')
+end
+local function scheduleGuildReply(sender,id,guid)
+  if type(id)~='string' or #id==0 or #id>120 then return end
+  if guid~='' and guid==playerKey() then return end
+  local now=clock()
+  if guildRequestSeen[sender] and now-guildRequestSeen[sender]<GUILD_REQUEST_COOLDOWN then return end
+  guildRequestSeen[sender]=now
+  if pendingGuildReply or (lastAutoReply and now-lastAutoReply<GUILD_REQUEST_COOLDOWN) then return end
+  if not hasLocalRecipeBook() then return end
+  pendingGuildReply={due=now+guildReplyDelay()}
+end
+local function updateGuildReply()
+  for sender,when in pairs(guildRequestSeen) do
+    if clock()-when>300 then guildRequestSeen[sender]=nil end
+  end
+  if not pendingGuildReply or clock()<pendingGuildReply.due or outgoing then return end
+  -- Let an active guild upload finish, then stagger contenders again.
+  if lastIncomingDataAt and clock()-lastIncomingDataAt<2 then
+    pendingGuildReply.due=clock()+guildReplyDelay();return
+  end
+  pendingGuildReply=nil
+  if type(IsInGuild)~='function' or not IsInGuild() or not hasLocalRecipeBook() then return end
+  lastAutoReply=clock()
+  sendSnapshot()
+end
 local function capture(verbose, requested)
   if not db then return end
   if not who() then
@@ -715,6 +780,9 @@ local function onMessage(prefix,payload,channel,sender)
       return
     end
   end
+  if kind=='GREQ' then
+    scheduleGuildReply(name,a[2],decode(a[3]));return
+  end
   if kind=='CHECK' then
     if recentCompleted[name..':'..a[2]] then
       enqueueControl('OK|'..a[2])
@@ -738,6 +806,7 @@ local function onMessage(prefix,payload,channel,sender)
       numberedPending[name]=box
     end
     if box.total~=total then return end
+    lastIncomingDataAt=clock()
     if not box.parts[idx] then box.parts[idx]=part;box.received=box.received+1 end
     box.started=clock()
     syncState='Empfange '..name..': '..box.received..'/'..total
@@ -967,7 +1036,21 @@ local function createUI()
     say('Synchronisierung geplant. Fortschritt unten im Fenster.')
   end)
 
-  ui.status=makeText(ui,330,-65,620,20)
+  ui.requestGuildButton=actionButton('Gildendaten anfordern',323,190,requestGuildData)
+  ui.requestGuildButton:SetScript('OnEnter',function(self)
+    if GameTooltip then
+      GameTooltip:SetOwner(self,'ANCHOR_TOP')
+      GameTooltip:SetText('Gildendaten anfordern')
+      GameTooltip:AddLine('Online-Handwerker antworten automatisch mit ihren gespeicherten Rezepten. Sperrzeit: 60 Sekunden.',1,0.82,0.42,true)
+      GameTooltip:Show()
+    end
+  end)
+  ui.requestGuildButton:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
+  ui.status=makeText(ui,530,-65,420,20)
+  ui.status:ClearAllPoints()
+  ui.status:SetPoint('TOPLEFT',ui,'TOPLEFT',530,-65)
+  ui.status:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-18,-65)
+  ui.status:SetHeight(20)
   ui.status:SetText('|cff9ab0a8Bereit|r')
 
   local search=CreateFrame('EditBox',nil,ui,'InputBoxTemplate');search:SetSize(350,24);search:SetPoint('TOPLEFT',18,-96)
@@ -1126,7 +1209,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.22'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.1'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1257,6 +1340,9 @@ local function createUI()
     self.statusElapsed=self.statusElapsed+dt
     if self.statusElapsed<0.3 then return end
     self.statusElapsed=0
+    local wait=lastGuildRequest and math.max(0,math.ceil(GUILD_REQUEST_COOLDOWN-(clock()-lastGuildRequest))) or 0
+    if wait>0 then self.requestGuildButton:Disable();self.requestGuildButton:SetText('Anfordern ('..wait..'s)')
+    else self.requestGuildButton:Enable();self.requestGuildButton:SetText('Gildendaten anfordern') end
     if outgoing then
       local sent=math.max(0,#outgoing.messages-#queue)
       self.progressBack:SetMinMaxValues(0,math.max(1,#outgoing.messages))
@@ -1494,16 +1580,32 @@ end
 
 -- Minimap launcher: no external libraries required.
 local minimapButton
+local function minimapGeometry()
+  if not Minimap or not UIParent then return nil end
+  local parentScale=UIParent:GetEffectiveScale()
+  local mapScale=Minimap:GetEffectiveScale()
+  local mx,my=Minimap:GetCenter()
+  if not parentScale or parentScale<=0 or not mapScale or not mx or not my then return nil end
+  local ratio=mapScale/parentScale
+  return mx*ratio,my*ratio,Minimap:GetWidth()*ratio/2+18,Minimap:GetHeight()*ratio/2+18,parentScale
+end
+local function minimapEdgeRadius(angle,rx,ry)
+  local c,s=math.cos(angle),math.sin(angle)
+  return 1/math.sqrt(c*c/(rx*rx)+s*s/(ry*ry))
+end
 local function positionMinimapButton()
-  if not minimapButton or not Minimap then return end
-  local angle=(db and tonumber(db.minimapAngle)) or 225
-  local radians=math.rad(angle)
+  if not minimapButton then return end
+  local mx,my,rx,ry=minimapGeometry()
+  if not mx then return end
+  local angle=math.rad((db and tonumber(db.minimapAngle)) or 225)
+  local distance=math.max(0,math.min(120,(db and tonumber(db.minimapDistance)) or 0))
+  local radius=minimapEdgeRadius(angle,rx,ry)+distance
   minimapButton:ClearAllPoints()
-  minimapButton:SetPoint('CENTER',Minimap,'CENTER',math.cos(radians)*80,math.sin(radians)*80)
+  minimapButton:SetPoint('CENTER',UIParent,'BOTTOMLEFT',mx+math.cos(angle)*radius,my+math.sin(angle)*radius)
 end
 local function createMinimapButton()
   if minimapButton or not Minimap then return end
-  minimapButton=CreateFrame('Button','SpucknapfBerufeMinimapButton',Minimap)
+  minimapButton=CreateFrame('Button','SpucknapfBerufeMinimapButton',UIParent)
   minimapButton:SetSize(32,32)
   minimapButton:SetFrameStrata('MEDIUM')
   minimapButton:SetFrameLevel((Minimap:GetFrameLevel() or 0)+8)
@@ -1514,8 +1616,8 @@ local function createMinimapButton()
   icon:SetTexture('Interface\\Icons\\Trade_LeatherWorking')
   minimapButton.icon=icon
   local border=minimapButton:CreateTexture(nil,'OVERLAY')
-  border:SetSize(53,53);border:SetPoint('CENTER',0,0)
-  border:SetTexture('Interface\\Minimap\\MiniMap-TrackingBorder')
+  border:SetSize(32,32);border:SetPoint('CENTER',0,0)
+  border:SetTexture('Interface\\AddOns\\SpucknapfBerufe\\Textures\\MinimapRing')
   minimapButton:SetHighlightTexture('Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight')
   minimapButton:SetScript('OnClick',function(self,button)
     if self.dragMoved then self.dragMoved=nil;return end
@@ -1525,14 +1627,23 @@ local function createMinimapButton()
   end)
   minimapButton:SetScript('OnDragStart',function(self)
     self.dragging=true;self.dragMoved=false
+    local _,_,_,_,scale=minimapGeometry()
+    local bx,by=self:GetCenter()
+    local x,y=GetCursorPosition()
+    self.cursorOffsetX=scale and bx and x/scale-bx or 0
+    self.cursorOffsetY=scale and by and y/scale-by or 0
+    if GameTooltip then GameTooltip:Hide() end
     self:SetScript('OnUpdate',function(btn)
-      if not Minimap or not GetCursorPosition then return end
+      local mx,my,rx,ry,parentScale=minimapGeometry()
+      if not mx or not GetCursorPosition then return end
       local x,y=GetCursorPosition()
-      local scale=Minimap:GetEffectiveScale()
-      if not scale or scale==0 then return end
-      local mx,my=Minimap:GetCenter()
-      local degrees=math.deg(math.atan2((y/scale)-my,(x/scale)-mx))
-      if db then db.minimapAngle=degrees end
+      local dx=x/parentScale-(btn.cursorOffsetX or 0)-mx
+      local dy=y/parentScale-(btn.cursorOffsetY or 0)-my
+      local length=math.sqrt(dx*dx+dy*dy)
+      if length<1 then return end
+      local angle=math.atan2(dy,dx)
+      local distance=math.max(0,math.min(120,length-minimapEdgeRadius(angle,rx,ry)))
+      if db then db.minimapAngle=math.deg(angle);db.minimapDistance=distance end
       btn.dragMoved=true
       positionMinimapButton()
     end)
@@ -1545,7 +1656,7 @@ local function createMinimapButton()
     GameTooltip:SetOwner(self,'ANCHOR_LEFT')
     GameTooltip:AddLine('SpucknapfBerufe',0.85,0.7,0.4)
     GameTooltip:AddLine('Linksklick: Fenster öffnen / schließen',1,1,1)
-    GameTooltip:AddLine('Ziehen: Position verändern',0.65,0.85,0.7)
+    GameTooltip:AddLine('Ziehen: am Rand oder weiter nach aussen verschieben',0.65,0.85,0.7)
     GameTooltip:Show()
   end)
   minimapButton:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
@@ -1576,7 +1687,7 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     registerPrefix()
-    say('Testversion 0.7.22 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.8.1 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1619,6 +1730,7 @@ frame:SetScript('OnUpdate',function(_,dt)
     end
     unresolvedMaterials=stillMissing
   end
+  updateGuildReply()
   elapsed=elapsed+dt
   if elapsed<SEND_INTERVAL then return end
   elapsed=elapsed%SEND_INTERVAL
@@ -1826,6 +1938,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='materials' then materialsProbe()
   elseif cmd=='recipeinfo' then recipeInfoProbe()
   elseif cmd=='categories' or cmd=='kategorien' then categoryProbe(arg)
+  elseif cmd=='anfordern' or cmd=='request' then requestGuildData()
   elseif cmd=='sync' then sendSnapshot(); say('Datenuebertragung geplant ('..(outgoing and #outgoing.messages or 0)..' Pakete). Bitte bis zur Empfangsbestaetigung warten.')
   elseif cmd=='syncstatus' then
     reportTransport()

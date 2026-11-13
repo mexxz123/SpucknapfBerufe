@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.18 (Testversion)
+SpucknapfBerufe v0.7.19 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -142,3 +142,18 @@ GetProfessions-Luecken brechen die Berufserkennung nicht mehr ab.
 Enthaelt Sync-Hotfix aus 0.7.17. Beide Clients aktualisieren.
 Namensaufloesung hat weiterhin den manuellen Fallback bei fehlender GUID-
 Rosterzuordnung. Kein WoW-Client-Test.
+
+
+v0.7.19 TEST: Scans benoetigen keinen manuellen Vollnamen mehr. Solange
+der Name fehlt, Speicherung unter eindeutiger Spieler-GUID. Vollname
+ueber native API, GUID-Roster oder unsichtbaren Spieler-Tooltip;
+spaetere Umbenennung fuehrt Buecher desselben GUID zusammen.
+Sync uebertraegt GUID optional; eigener Echo-Beginn kann Namen bestaetigen.
+Alle sieben Berufe und Sync-Hotfix aus 0.7.18 enthalten.
+Kein WoW-Client-Test.
+
+Sync-Diagnose: Nach dem letzten Fehlversuch automatische Statistik.
+Optional /spb syncstatus auf Sender UND Empfaenger zeigt eingegangene
+Pakete und noch unvollstaendige Buecher. Nicht als bestaetigter Fix fuer
+den im Spiel beobachteten ACK-Ausfall zu verstehen.
+

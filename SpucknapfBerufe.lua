@@ -8,6 +8,7 @@ local outgoing=nil
 local numberedPending={}
 local recentCompleted={}
 local controlQueue,controlQueued={},{}
+local syncStats={sent=0,received=0,data=0,ok=0,miss=0,lastSender='-',lastKind='-'}
 local syncState="Bereit"
 local syncProgress=0
 local syncTotal=0
@@ -76,6 +77,27 @@ local function playerKey()
   if type(guid)=='string' and guid~='' then return guid end
   return nil
 end
+local identityTooltip
+local function tooltipPlayerName()
+  if type(CreateFrame)~='function' or not UIParent then return nil end
+  local ok,full=pcall(function()
+    if not identityTooltip then
+      identityTooltip=CreateFrame('GameTooltip','SpucknapfBerufeIdentityTooltip',UIParent,'GameTooltipTemplate')
+    end
+    identityTooltip:SetOwner(UIParent,'ANCHOR_NONE')
+    identityTooltip:SetUnit('player')
+    local line=_G['SpucknapfBerufeIdentityTooltipTextLeft1']
+    local text=line and line:GetText()
+    identityTooltip:Hide()
+    if type(text)~='string' then return nil end
+    text=text:gsub('|c%x%x%x%x%x%x%x%x',''):gsub('|r',''):match('^%s*(.-)%s*$')
+    local short=shortName()
+    if text:sub(1,#short+1)==short..' ' then return text end
+  end)
+  if ok then return full end
+  if identityTooltip and identityTooltip.Hide then identityTooltip:Hide() end
+  return nil
+end
 local function resolvedPlayerName()
   local key=playerKey()
   if key and db and db.playerNames and db.playerNames[key] then return db.playerNames[key] end
@@ -97,9 +119,18 @@ local function resolvedPlayerName()
       end
     end
   end
-  return nil
+  return tooltipPlayerName()
 end
-local function who() return resolvedPlayerName() or shortName() end
+local function who()
+  return resolvedPlayerName() or (playerKey() and '@'..playerKey()) or nil
+end
+local function displayCharacter(key)
+  if type(key)=='string' and key:sub(1,1)=='@' then
+    local record=db and db.characters[key]
+    return (record and record.displayName or shortName())..' (Name wird geladen)'
+  end
+  return key or 'Unbekannt'
+end
 local function archiveShortAliases()
   if not db then return end
   db.legacyAliases=db.legacyAliases or {}
@@ -118,10 +149,43 @@ local function archiveShortAliases()
     end
   end
 end
+local function mergeCharacterBooks(primary,other)
+  primary.professions=primary.professions or {}
+  for _,old in ipairs(other.professions or {}) do
+    local target
+    for _,p in ipairs(primary.professions) do if p.name==old.name then target=p;break end end
+    if not target then primary.professions[#primary.professions+1]=old
+    else
+      target.recipes=target.recipes or {}
+      local ids={};for _,r in ipairs(target.recipes) do ids[r.id]=true end
+      for _,r in ipairs(old.recipes or {}) do
+        if not ids[r.id] then target.recipes[#target.recipes+1]=r;ids[r.id]=true end
+      end
+      target.complete=target.complete or old.complete
+      target.icon=target.icon or old.icon
+    end
+  end
+  return primary
+end
 local function migrateLocalAlias(full)
-  if not db or not full or not full:find(' ',1,true) then return end
-  -- Legacy short-name books may contain multiple characters. Preserve them
-  -- separately rather than assigning another character's professions by guess.
+  if not db then return end
+  local guid=playerKey()
+  if guid and full and full:sub(1,1)~='@' and full:find(' ',1,true) then
+    db.playerNames[guid]=full
+    local current=db.characters[full]
+    local keys={};for key,record in pairs(db.characters) do
+      if key~=full and (key=='@'..guid or record.guid==guid) then keys[#keys+1]=key end
+    end
+    for _,key in ipairs(keys) do
+      local old=db.characters[key]
+      if current then
+        if (tonumber(old.updated) or 0)>(tonumber(current.updated) or 0) then current=mergeCharacterBooks(old,current)
+        else current=mergeCharacterBooks(current,old) end
+      else current=old end
+      db.characters[key]=nil
+    end
+    if current then current.guid=guid;db.characters[full]=current end
+  end
   archiveShortAliases()
 end
 local function encode(s) return tostring(s or ''):gsub('([^%w%-%._ ])',function(c) return string.format('%%%02X',string.byte(c)) end):gsub(' ','%%20') end
@@ -130,6 +194,7 @@ local function split(s)
   local a={}; for part in (s..'|'):gmatch('(.-)|') do a[#a+1]=part end; return a
 end
 local function transmit(s)
+  syncStats.sent=syncStats.sent+1
   if not IsInGuild or not IsInGuild() then return end
   if C_ChatInfo and type(C_ChatInfo.SendAddonMessage)=='function' then
     C_ChatInfo.SendAddonMessage(PREFIX,s,'GUILD')
@@ -397,24 +462,24 @@ local function mergeScan()
       end
     end
   end
-  db.characters[name]={professions=fresh,updated=stamp(),source='local',guid=playerKey()}
+  db.characters[name]={professions=fresh,updated=stamp(),source='local',guid=playerKey(),displayName=shortName()}
   archiveShortAliases()
   return fresh
 end
 -- Build a complete immutable snapshot; do not interrupt an in-flight transfer.
 local function buildSnapshot()
   local messages={}
-  if not resolvedPlayerName() then return nil end
+  if not who() then return nil end
   local data=db.characters[who()]
   if not data then return nil end
   transferCounter=transferCounter+1
-  local seq=tostring(stamp())..'-'..tostring(transferCounter)..'-'..tostring(math.floor(clock()*100)%100000)
+  local seq=tostring(playerKey() or 'player'):gsub('[^%w%-]','')..'-'..tostring(stamp())..'-'..tostring(transferCounter)..'-'..tostring(math.floor(clock()*100)%100000)
   local function add(msg)
     if #msg>240 then return false end
     messages[#messages+1]=msg
     return true
   end
-  add('B|'..seq)
+  add('B|'..seq..'|'..encode(playerKey() or ''))
   for _,p in ipairs(data.professions or {}) do
     if not excluded[p.name] then
       local profRecord='P|'..seq..'|'..encode(p.name)..'|'..p.skill..'|'..p.max..'|'..p.id..'|'..(p.complete and '1' or '0')
@@ -450,6 +515,9 @@ local function buildSnapshot()
 end
 local function startTransfer(transfer)
   outgoing=transfer
+  outgoing.receivedAtStart=syncStats.received
+  outgoing.okAtStart=syncStats.ok
+  outgoing.missAtStart=syncStats.miss
   outgoing.attempts=outgoing.attempts+1
   queue={}
   for _,msg in ipairs(outgoing.messages) do queue[#queue+1]=msg end
@@ -459,9 +527,7 @@ local function startTransfer(transfer)
 end
 local function sendSnapshot()
   if not db then return end
-  if not resolvedPlayerName() then
-    say('Vor dem Synchronisieren: /spb name Vorname Nachname setzen.');return
-  end
+  if not who() then say('Spielerkennung wird noch geladen. Bitte gleich erneut versuchen.');return end
   local nextTransfer=buildSnapshot()
   if not nextTransfer then return end
   if outgoing then
@@ -473,8 +539,8 @@ local function sendSnapshot()
 end
 local function capture(verbose, requested)
   if not db then return end
-  if not resolvedPlayerName() then
-    if verbose then say('Vollstaendiger Charaktername fehlt. Bitte /spb name Vorname Nachname setzen. Rezepte bleiben unveraendert.') end
+  if not who() then
+    if verbose then say('Spielerkennung wird noch geladen. Bitte gleich erneut scannen.') end
     return
   end
   local list=mergeScan()
@@ -606,6 +672,20 @@ local function onMessage(prefix,payload,channel,sender)
   local name=sender:match('^[^-]+') or sender
   if name==who() then return end
   local a=split(payload); local kind=a[1]
+  syncStats.received=syncStats.received+1
+  syncStats.lastSender=name;syncStats.lastKind=kind or '?'
+  if kind=='D' then syncStats.data=syncStats.data+1 end
+  if kind=='OK' then syncStats.ok=syncStats.ok+1 end
+  if kind=='MISS' then syncStats.miss=syncStats.miss+1 end
+  -- Match the full outgoing sequence and GUID before accepting our echoed name.
+  if kind=='D' and outgoing and a[2]==outgoing.seq then
+    local inner=payload:match('^D|[^|]*|[^|]*|[^|]*|(.*)$')
+    local fields=inner and split(inner)
+    if fields and fields[1]=='B' and decode(fields[3])==playerKey() then
+      migrateLocalAlias(name)
+      return
+    end
+  end
   if kind=='CHECK' then
     if recentCompleted[name..':'..a[2]] then
       enqueueControl('OK|'..a[2])
@@ -655,7 +735,7 @@ local function onMessage(prefix,payload,channel,sender)
   elseif kind=='REQ' and a[2]==who() then
     sendSnapshot()
   elseif kind=='HELLO' then
-    db.peers[name]={lastSeen=stamp()}; enqueue('ACK')
+    db.peers[name]={lastSeen=stamp()}; enqueueControl('ACK')
   elseif kind=='ACK' then db.peers[name]={lastSeen=stamp()}
   elseif kind=='B' and a[2] then
     pending[name]={seq=a[2],professions={},started=clock(),count=1,invalid=false}
@@ -993,7 +1073,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.18'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.19'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1440,7 +1520,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.18 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.19 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1501,6 +1581,7 @@ frame:SetScript('OnUpdate',function(_,dt)
         startTransfer(outgoing)
       else
         say('Synchronisierung nicht bestaetigt. Bitte Empfaenger pruefen.')
+        say('Sync-Diagnose: '..(syncStats.received-(outgoing.receivedAtStart or 0))..' eingehende Nachrichten, '..(syncStats.ok-(outgoing.okAtStart or 0))..' OK, '..(syncStats.miss-(outgoing.missAtStart or 0))..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
         syncState='Keine Empfangsbestaetigung';outgoing=nil
       end
     end
@@ -1682,6 +1763,10 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='recipeinfo' then recipeInfoProbe()
   elseif cmd=='categories' or cmd=='kategorien' then categoryProbe(arg)
   elseif cmd=='sync' then sendSnapshot(); say('Datenuebertragung geplant ('..(outgoing and #outgoing.messages or 0)..' Pakete). Bitte bis zur Empfangsbestaetigung warten.')
+  elseif cmd=='syncstatus' then
+    say('Sync: '..syncStats.sent..' Sendeversuche, '..syncStats.received..' empfangen, '..syncStats.data..' Datenpakete, '..syncStats.ok..' OK, '..syncStats.miss..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
+    local n=0;for sender,box in pairs(numberedPending) do n=n+1;say('Empfang von '..sender..': '..box.received..'/'..box.total..' Pakete') end
+    if n==0 then say('Kein unvollstaendiger Empfang gespeichert.') end
   elseif cmd=='ping' then enqueue('HELLO'); say('Ping eingereiht.')
   elseif cmd=='peers' then
     local n=0; for name in pairs(db.peers) do say('Kontakt: '..name); n=n+1 end

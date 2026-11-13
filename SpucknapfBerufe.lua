@@ -309,9 +309,10 @@ local function activeTradeSkillName(api)
   return nil
 end
 local function normalizeProfessionName(name)
-  return tostring(name or ''):lower():gsub('ä','ae'):gsub('ö','oe'):gsub('ü','ue'):gsub('ß','ss'):gsub('%s+','')
+  local normalized=tostring(name or ''):lower():gsub('ä','ae'):gsub('ö','oe'):gsub('ü','ue'):gsub('ß','ss'):gsub('%s+','')
+  return normalized=='alchimie' and 'alchemie' or normalized
 end
-local function scanRecipes(list, requested)
+local function scanRecipes(list, requested, automatic)
   local api=C_TradeSkillUI
   if type(api)~='table' or type(api.GetAllRecipeIDs)~='function' then
     return 'GetAllRecipeIDs nicht verfuegbar'
@@ -321,7 +322,7 @@ local function scanRecipes(list, requested)
   local target
   if requested and requested~='' then
     for _,p in ipairs(list) do
-      if p.name:lower()==requested:lower() then target=p; break end
+      if normalizeProfessionName(p.name)==normalizeProfessionName(requested) then target=p; break end
     end
     if not target then return 'Unbekannter Beruf: '..requested end
   else
@@ -347,22 +348,27 @@ local function scanRecipes(list, requested)
     return target.name..': '..#ids..' Rezept-IDs sichtbar; Erlernstatus-API fehlt. Keine Rezepte als erlernt gespeichert. /spb probe'
   end
   local recipes={}
+  local incomplete=false
   local checked,unknown=0,0
   for _,id in ipairs(ids) do
     if type(id)=='number' then
-      local learned, name, category, skillRequired, trivialLevel, craftedItemID
+      local learned, name, category, skillRequired, trivialLevel, craftedItemID,recipeSkillLine
       if learnedChecker=='info' then
         local good,info=pcall(api.GetRecipeInfo,id,0)
-        if good and type(info)=='table' then learned=info.learned; name=info.name; category=info.categoryName or info.recipeCategoryName or (type(info.category)=='string' and info.category or nil); if type(info.categoryID)=='number' and type(api.GetCategoryInfo)=='function' then local co,ci=pcall(api.GetCategoryInfo,info.categoryID); if co and type(ci)=='table' and type(ci.name)=='string' and ci.name~='' then category=ci.name end end; skillRequired=tonumber(info.requiredSkill or info.skillRequired or info.skillLevel); trivialLevel=tonumber(info.maxTrivialLevel) end
+        if good and type(info)=='table' then learned=info.learned; name=info.name; category=info.categoryName or info.recipeCategoryName or (type(info.category)=='string' and info.category or nil); if type(info.categoryID)=='number' and type(api.GetCategoryInfo)=='function' then local co,ci=pcall(api.GetCategoryInfo,info.categoryID); if co and type(ci)=='table' and type(ci.name)=='string' and ci.name~='' then category=ci.name end end; skillRequired=tonumber(info.requiredSkill or info.skillRequired or info.skillLevel); trivialLevel=tonumber(info.maxTrivialLevel);recipeSkillLine=tonumber(info.skillLineID) end
       else
         local good,result=pcall(api.IsRecipeLearned,id)
         if good then learned=result end
       end
       if learned==true then
+        if automatic and (type(name)~='string' or name=='') then incomplete=true end
+        if automatic and recipeSkillLine and target.id and target.id>0 and recipeSkillLine~=target.id then incomplete=true end
         local mats={}
         if type(api.GetRecipeSchematic)=='function' then
           local sg,schematic=pcall(api.GetRecipeSchematic,id,false)
+          if automatic and (not sg or type(schematic)~='table') then incomplete=true end
           if sg and type(schematic)=='table' then
+            if automatic and type(schematic.reagentSlotSchematics)~='table' then incomplete=true end
             -- Output item, not the recipe/spell ID. Some Forever recipes have no item output.
             local output=schematic.outputItemID or schematic.outputItemId or schematic.craftedItemID or schematic.craftedItemId
             if type(schematic.outputItem)=='table' then output=output or schematic.outputItem.itemID or schematic.outputItem.itemId end
@@ -372,10 +378,12 @@ local function scanRecipes(list, requested)
               if type(slot)=='table' then
                 local opts=slot.reagents or {}
                 local reagent=opts[1]
+                if automatic and type(reagent)~='table' then incomplete=true end
                 if type(reagent)=='table' then
                   local item=tonumber(reagent.itemID or reagent.itemId)
                   local qty=tonumber(reagent.quantityRequired or slot.quantityRequired)
-                  if item and qty and #mats<20 then mats[#mats+1]={id=item,qty=qty} end
+                  if item and qty and #mats<20 then mats[#mats+1]={id=item,qty=qty}
+                  elseif automatic then incomplete=true end
                 end
               end
             end
@@ -392,8 +400,17 @@ local function scanRecipes(list, requested)
   if #recipes==0 then
     return target.name..': Keine erlernten Rezepte geladen; vorhandene Daten bleiben erhalten. Berufsfenster oeffnen und erneut scannen.'
   end
+  if automatic then
+    if incomplete or type(api.GetRecipeSchematic)~='function' then
+      return target.name..': Rezeptdetails noch nicht vollstaendig geladen.'
+    end
+    local found={};for _,r in ipairs(recipes) do found[r.id]=true end
+    for _,prior in ipairs(target.recipes or {}) do
+      if not found[prior.id] then return target.name..': Unvollstaendige Liste; gespeicherte Rezepte bleiben erhalten.' end
+    end
+  end
   target.recipes=recipes; target.complete=true
-  return target.name..': '..#recipes..' erlernte Rezepte aus '..#ids..' IDs gespeichert'
+  return target.name..': '..#recipes..' erlernte Rezepte aus '..#ids..' IDs gespeichert',true
 end
 local function probe()
   local api=C_TradeSkillUI or {}
@@ -493,20 +510,91 @@ local function mergeScan()
   archiveShortAliases()
   return fresh
 end
+-- Versioned replicas: revisions belong to the original handworker, not the relay.
+local automaticCacheDue=nil
+local lastAutomaticBroadcast=-60
+local lastCacheHello=-60
+local replicaJobs={}
+local servedReplicaRequests={}
+local replicaRequestSeen={}
+local cacheReceiveContext=nil
+local function currentGuildKey()
+  if type(GetGuildInfo)~='function' then return nil end
+  local name=GetGuildInfo('player')
+  if type(name)~='string' or name=='' then return nil end
+  local realm=type(GetRealmName)=='function' and GetRealmName() or ''
+  return name..'|'..tostring(realm)
+end
+local function bookFingerprint(record)
+  local rows={}
+  for _,p in ipairs(record.professions or {}) do
+    if not excluded[p.name] then
+      rows[#rows+1]='P|'..encode(p.name)..'|'..tostring(tonumber(p.skill) or 0)..'|'..tostring(tonumber(p.max) or 0)..'|'..tostring(tonumber(p.id) or 0)..'|'..(p.complete and '1' or '0')
+      if p.complete then
+        for _,r in ipairs(p.recipes or {}) do
+          rows[#rows+1]='R|'..encode(p.name)..'|'..tostring(r.id)..'|'..encode(r.name)..'|'..encode(r.category or '')..'|'..tostring(tonumber(r.skill) or 0)..'|'..tostring(tonumber(r.trivialLevel) or 0)
+          for _,m in ipairs(r.materials or {}) do rows[#rows+1]='M|'..encode(p.name)..'|'..tostring(r.id)..'|'..tostring(m.id)..'|'..tostring(m.qty) end
+        end
+      end
+    end
+  end
+  table.sort(rows)
+  local a,b=1,7
+  local text=table.concat(rows,'\n')
+  for i=1,#text do a=(a*33+text:byte(i))%2147483647;b=(b*65599+text:byte(i))%2147483629 end
+  return tostring(a)..'-'..tostring(b)..'-'..#text
+end
+local function replicaMetadata()
+  db.replicaMetadata=db.replicaMetadata or {};return db.replicaMetadata
+end
+local function ensureLocalVersion()
+  local owner=who()
+  if not db or not owner then return nil end
+  migrateLocalAlias(owner)
+  local record=db.characters[owner]
+  if not record then return nil end
+  record.guildKey=currentGuildKey()
+  local digest=bookFingerprint(record)
+  local meta=replicaMetadata()[owner]
+  if not meta then
+    for _,prior in pairs(replicaMetadata()) do if prior.guid and prior.guid==playerKey() and (not meta or prior.revision>meta.revision) then meta=prior end end
+  end
+  if not meta or meta.digest~=digest or meta.guildKey~=record.guildKey then
+    meta={revision=math.max(stamp(),(meta and meta.revision or 0)+1),digest=digest,guid=playerKey(),guildKey=record.guildKey}
+    replicaMetadata()[owner]=meta
+    automaticCacheDue=math.max(clock()+8,lastAutomaticBroadcast+60)
+  end
+  replicaMetadata()[owner]=meta
+  return meta
+end
+local function markReplicaServed(request,owner,meta)
+  if not request or request=='' then return end
+  servedReplicaRequests[request]=servedReplicaRequests[request] or {when=clock(),owners={}}
+  servedReplicaRequests[request].owners[owner]=tostring(meta.revision)..':'..meta.digest
+end
+
 -- Build a complete immutable snapshot; do not interrupt an in-flight transfer.
-local function buildSnapshot()
+local function buildSnapshot(cacheOwner,cacheRequest)
   local messages={}
+  local overflow=false
   if not who() then return nil end
-  local data=db.characters[who()]
+  local owner=cacheOwner or who()
+  local data=db.characters[owner]
   if not data then return nil end
   transferCounter=transferCounter+1
   local seq=tostring(playerKey() or 'player'):gsub('[^%w%-]','')..'-'..tostring(stamp())..'-'..tostring(transferCounter)..'-'..tostring(math.floor(clock()*100)%100000)
   local function add(msg)
-    if #msg>240 then return false end
+    if #msg>240 then overflow=true;return false end
     messages[#messages+1]=msg
     return true
   end
-  add('B|'..seq..'|'..encode(playerKey() or ''))
+  local meta=cacheOwner and replicaMetadata()[owner] or ensureLocalVersion()
+  if cacheOwner then
+    if not meta or bookFingerprint(data)~=meta.digest then return nil end
+    add('CB|'..seq..'|'..encode(owner)..'|'..encode(meta.guid or '')..'|'..meta.revision..'|'..meta.digest..'|'..(cacheRequest or ''))
+  else
+    add('B|'..seq..'|'..encode(playerKey() or '')..'|'..tostring(meta and meta.revision or '')..'|'..(meta and meta.digest or ''))
+  end
   for _,p in ipairs(data.professions or {}) do
     if not excluded[p.name] then
       local profRecord='P|'..seq..'|'..encode(p.name)..'|'..p.skill..'|'..p.max..'|'..p.id..'|'..(p.complete and '1' or '0')
@@ -521,7 +609,7 @@ local function buildSnapshot()
           local record='R|'..seq..'|'..encode(p.name)..'|'..tostring(r.id)..'|'..encode(r.name)..'|'..encode(r.category or '')
           local withSkills=record..'|'..tostring(tonumber(r.skill) or '')..'|'..tostring(tonumber(r.trivialLevel) or '')
           -- Optional trailing fields: older clients ignore them. Reserve numbered-packet overhead.
-          if #withSkills+#seq+24<=240 then record=withSkills end
+          if cacheOwner or meta or #withSkills+#seq+24<=240 then record=withSkills end
           add(record)
           for _,m in ipairs(r.materials or {}) do
             add('M|'..seq..'|'..encode(p.name)..'|'..tostring(r.id)..'|'..tostring(m.id)..'|'..tostring(m.qty))
@@ -533,12 +621,13 @@ local function buildSnapshot()
   -- The E record carries the exact expected message count, including B and E.
   add('E|'..seq..'|'..tostring(#messages+1))
   -- Number every packet. Receiver can detect missing packets without assuming order.
+  if overflow then return nil end
   local numbered={}
   for i,msg in ipairs(messages) do
-    numbered[i]='D|'..seq..'|'..i..'|'..#messages..'|'..msg
+    numbered[i]=(cacheOwner and 'CD|' or 'D|')..seq..'|'..i..'|'..#messages..'|'..msg
     if #numbered[i]>240 then return nil end
   end
-  return {seq=seq,messages=numbered,attempts=0}
+  return {seq=seq,messages=numbered,attempts=0,cacheOwner=cacheOwner,cacheRequest=cacheRequest,cacheRevision=meta and meta.revision,cacheDigest=meta and meta.digest}
 end
 local function startTransfer(transfer)
   outgoing=transfer
@@ -559,6 +648,7 @@ local function sendSnapshot()
   if not who() then say('Spielerkennung wird noch geladen. Bitte gleich erneut versuchen.');return end
   local nextTransfer=buildSnapshot()
   if not nextTransfer then return end
+  automaticCacheDue=nil;lastAutomaticBroadcast=clock()
   if outgoing then
     -- A user may request a newer snapshot; finish and confirm this one first.
     outgoing.next=nextTransfer
@@ -600,7 +690,7 @@ local function requestGuildData()
   end
   guildRequestCounter=guildRequestCounter+1
   local id=tostring(playerKey() or 'request')..'-'..tostring(math.floor(now*100))..'-'..guildRequestCounter
-  local message='GREQ|'..id..'|'..encode(playerKey() or '')
+  local message='GREQ2|'..id..'|'..encode(playerKey() or '')
   enqueueControl(message)
   if not controlQueued[message] then say('Sendewarteschlange belegt. Bitte gleich erneut versuchen.');return end
   lastGuildRequest=now
@@ -639,7 +729,9 @@ local function capture(verbose, requested)
   end
   local list=mergeScan()
   local result='Berufsdaten aktualisiert; Rezepte unveraendert.'
-  if requested and requested~='' then result=scanRecipes(list,requested) end
+  local success
+  if requested and requested~='' then result,success=scanRecipes(list,requested) end
+  if success then ensureLocalVersion() end
   db.characters[who()].updated=stamp()
   if verbose then
     say('Berufe erkannt: '..#list)
@@ -648,6 +740,65 @@ local function capture(verbose, requested)
   end
   -- Scans only update the local book. Sync is explicitly user initiated.
   if renderUI then renderUI() end
+end
+-- The original profession window controls automatic scans, never our selected row.
+local tradeWindowOpen=false
+local automaticScan=nil
+local lastAutomaticScan=-10
+local function scheduleAutomaticScan(opened)
+  if opened then tradeWindowOpen=true end
+  if not tradeWindowOpen then return end
+  automaticScan={due=clock()+0.75,deadline=clock()+15,stable=nil}
+end
+local function automaticProfession()
+  local api=C_TradeSkillUI or {}
+  local name=activeTradeSkillName(api)
+  if type(name)~='string' or name=='' or excluded[name] then return nil end
+  local normalized=normalizeProfessionName(name)
+  local supported={alchemie=true,schmiedekunst=true,verzauberkunst=true,ingenieurskunst=true,lederverarbeitung=true,schneiderei=true,kochkunst=true}
+  if not supported[normalized] then return nil end
+  local target
+  for _,p in ipairs(professions()) do if normalizeProfessionName(p.name)==normalized then target=p;break end end
+  if not target then return nil end
+  if type(api.GetProfessionInfo)=='function' then
+    local ok,info=pcall(api.GetProfessionInfo)
+    if ok and type(info)=='table' then
+      if type(info.name)=='string' and normalizeProfessionName(info.name)~=normalized then return nil end
+      local id=tonumber(info.skillLineID)
+      if id and id>0 and target.id and target.id>0 and id~=target.id then return nil end
+    end
+  end
+  return target.name
+end
+local function updateAutomaticScan()
+  local task=automaticScan
+  if not task or not db or not tradeWindowOpen or clock()<task.due then return end
+  if clock()>task.deadline then automaticScan=nil;return end
+  if clock()-lastAutomaticScan<2 then task.due=lastAutomaticScan+2;return end
+  task.due=clock()+0.6
+  local name=automaticProfession()
+  local api=C_TradeSkillUI or {}
+  if not name or not who() or type(api.GetAllRecipeIDs)~='function' then task.stable=nil;return end
+  local ok,ids=pcall(api.GetAllRecipeIDs)
+  if not ok or type(ids)~='table' or #ids==0 then task.stable=nil;return end
+  local sorted={}
+  for _,id in ipairs(ids) do
+    if type(id)~='number' then task.stable=nil;return end
+    sorted[#sorted+1]=id
+  end
+  table.sort(sorted)
+  local signature=normalizeProfessionName(name)..':'..table.concat(sorted,',')
+  if task.stable~=signature then task.stable=signature;return end
+  -- Recheck immediately before committing; tab switches invalidate the task.
+  if automaticProfession()~=name then task.stable=nil;return end
+  local list=mergeScan()
+  local _,success=scanRecipes(list,name,true)
+  if success then
+    lastAutomaticScan=clock();automaticScan=nil
+    ensureLocalVersion()
+    local record=db.characters[who()];if record then record.updated=stamp() end
+    if renderUI then renderUI() end
+  end
 end
 local function show()
   local count=0
@@ -760,6 +911,100 @@ local function apiReport()
   say('TradeSkill: GetAllRecipeIDs='..type(a.GetAllRecipeIDs)..', GetRecipeInfo='..type(a.GetRecipeInfo)..', GetProfessionInfo='..type(a.GetProfessionInfo))
   say('TradeSkill: GetRecipeSchematic='..type(a.GetRecipeSchematic)..', GetRecipeLink='..type(a.GetRecipeLink))
 end
+local function replicaDelay(owner)
+  local text=(playerKey() or who() or '')..'|'..owner
+  local hash=0;for i=1,#text do hash=(hash*33+text:byte(i))%10007 end
+  return 1+(hash%5000)/500
+end
+local function scheduleReplicaReplies(sender,request,guid)
+  if type(request)~='string' or #request<1 or #request>120 or guid==playerKey() then return end
+  if replicaRequestSeen[sender] and clock()-replicaRequestSeen[sender]<60 then return end
+  replicaRequestSeen[sender]=clock()
+  ensureLocalVersion()
+  local guild=currentGuildKey()
+  if not guild then return end
+  local count=0
+  for owner,record in pairs(db.characters) do
+    local meta=replicaMetadata()[owner]
+    if owner:find(' ',1,true) and meta and record.guildKey==guild then
+      local hasRecipes=false
+      for _,p in ipairs(record.professions or {}) do if p.complete and #(p.recipes or {})>0 then hasRecipes=true;break end end
+      if hasRecipes and not replicaJobs[owner] then
+        replicaJobs[owner]={request=request,due=clock()+replicaDelay(owner),guild=guild}
+        count=count+1;if count>=100 then break end
+      end
+    end
+  end
+end
+local function updateReplicas()
+  if not db then return end
+  local now=clock()
+  for request,entry in pairs(servedReplicaRequests) do if now-entry.when>600 then servedReplicaRequests[request]=nil end end
+  for sender,when in pairs(replicaRequestSeen) do if now-when>300 then replicaRequestSeen[sender]=nil end end
+  if outgoing or (lastIncomingDataAt and now-lastIncomingDataAt<2) then return end
+  local guild=currentGuildKey()
+  if not guild then return end
+  if automaticCacheDue and now>=automaticCacheDue then
+    local available=false
+    for _,peer in pairs(db.peers or {}) do if peer.cache and stamp()-(peer.lastSeen or 0)<120 then available=true;break end end
+    if not available then
+      if now-lastCacheHello>=60 then enqueueControl('HELLO|CACHE1');lastCacheHello=now;automaticCacheDue=now+5
+      else automaticCacheDue=math.max(now+1,lastCacheHello+60) end
+      return
+    end
+    local owner=who()
+    local record=owner and db.characters[owner]
+    local meta=owner and replicaMetadata()[owner]
+    if record and meta and record.guildKey==guild then
+      local transfer
+      if owner:sub(1,1)=='@' then transfer=buildSnapshot() else transfer=buildSnapshot(owner,'') end
+      if transfer then automaticCacheDue=nil;lastAutomaticBroadcast=now;startTransfer(transfer);return end
+    end
+    automaticCacheDue=nil
+  end
+  local selected,job
+  for owner,task in pairs(replicaJobs) do
+    local meta=replicaMetadata()[owner]
+    local served=servedReplicaRequests[task.request]
+    if task.guild~=guild or not meta or (served and served.owners[owner]==tostring(meta.revision)..':'..meta.digest) then
+      replicaJobs[owner]=nil
+    elseif now>=task.due and (not job or task.due<job.due) then selected=owner;job=task end
+  end
+  if selected then
+    replicaJobs[selected]=nil
+    local transfer=buildSnapshot(selected,job.request)
+    if transfer then startTransfer(transfer) end
+  end
+end
+local function receiveCachedBook(relay,seq,parts,replay,prefix,channel)
+  local header=split(parts[1] or '')
+  local last=split(parts[#parts] or '')
+  if header[1]~='CB' or header[2]~=seq or last[1]~='E' or last[2]~=seq or tonumber(last[3])~=#parts then return end
+  local owner,guid,revision,digest,request=decode(header[3]),decode(header[4]),tonumber(header[5]),header[6],header[7]
+  if #owner>100 or not owner:find(' ',1,true) or not revision or revision<0 or revision>1e15 or type(digest)~='string' then return end
+  local meta=replicaMetadata()[owner]
+  local function complete()
+    recentCompleted[relay..':'..seq]=clock()
+    local version={revision=revision,digest=digest}
+    markReplicaServed(request,owner,version)
+    local job=replicaJobs[owner];if job then markReplicaServed(job.request,owner,version) end
+    enqueueControl('OK|'..seq)
+  end
+  if owner==who() or (guid~='' and guid==playerKey()) then complete();return end
+  if meta and meta.guid and meta.guid~='' and guid~='' and meta.guid~=guid then complete();return end
+  if meta and (meta.revision>revision or (meta.revision==revision and meta.digest==digest)) then complete();return end
+  if meta and meta.revision==revision and meta.digest~=digest then complete();return end
+  for i=2,#parts-1 do
+    local fields=split(parts[i])
+    if fields[2]~=seq or (fields[1]~='P' and fields[1]~='R' and fields[1]~='M') then return end
+  end
+  cacheReceiveContext={relay=relay,guild=currentGuildKey()}
+  replay(prefix,'B|'..seq..'|'..encode(guid)..'|'..revision..'|'..digest,channel,owner)
+  for i=2,#parts do replay(prefix,parts[i],channel,owner) end
+  cacheReceiveContext=nil
+  local applied=replicaMetadata()[owner]
+  if applied and applied.revision==revision and applied.digest==digest then complete() end
+end
 local function onMessage(prefix,payload,channel,sender)
   if prefix~=PREFIX or not db or type(payload)~='string' or not sender then return end
   if channel~='GUILD' then return end
@@ -768,7 +1013,7 @@ local function onMessage(prefix,payload,channel,sender)
   local a=split(payload); local kind=a[1]
   syncStats.received=syncStats.received+1
   syncStats.lastSender=name;syncStats.lastKind=kind or '?'
-  if kind=='D' then syncStats.data=syncStats.data+1 end
+  if kind=='D' or kind=='CD' then syncStats.data=syncStats.data+1 end
   if kind=='OK' then syncStats.ok=syncStats.ok+1 end
   if kind=='MISS' then syncStats.miss=syncStats.miss+1 end
   -- Match the full outgoing sequence and GUID before accepting our echoed name.
@@ -779,6 +1024,10 @@ local function onMessage(prefix,payload,channel,sender)
       migrateLocalAlias(name)
       return
     end
+  end
+  if kind=='GREQ2' then
+    db.peers[name]={lastSeen=stamp(),cache=true}
+    scheduleReplicaReplies(name,a[2],decode(a[3]));return
   end
   if kind=='GREQ' then
     scheduleGuildReply(name,a[2],decode(a[3]));return
@@ -791,10 +1040,10 @@ local function onMessage(prefix,payload,channel,sender)
     end
     return
   end
-  if kind=='D' then
+  if kind=='D' or kind=='CD' then
     local seq,idx,total=a[2],tonumber(a[3]),tonumber(a[4])
     if not seq or not idx or not total or total<1 or total>3000 or idx<1 or idx>total then return end
-    local part=payload:match('^D|[^|]*|[^|]*|[^|]*|(.*)$')
+    local part=payload:match('^[^|]*|[^|]*|[^|]*|[^|]*|(.*)$')
     if not part then return end
     if recentCompleted[name..':'..seq] then
       enqueueControl('OK|'..seq)
@@ -814,7 +1063,8 @@ local function onMessage(prefix,payload,channel,sender)
     if box.received==total then
       numberedPending[name]=nil
       -- Assemble the complete book before publishing anything to saved data.
-      for i=1,total do onMessage(prefix,box.parts[i],channel,sender) end
+      if kind=='CD' then receiveCachedBook(name,seq,box.parts,onMessage,prefix,channel)
+      else for i=1,total do onMessage(prefix,box.parts[i],channel,sender) end end
     end
     return
   elseif kind=='MISS' and outgoing and outgoing.seq==a[2] then
@@ -834,14 +1084,19 @@ local function onMessage(prefix,payload,channel,sender)
       say(string.format('Empfang bestaetigt von %s (%d Pakete). Gesamt %.1fs: Erstversand %.1fs, danach %.1fs; %d Versuch(e).',name,#outgoing.messages,now-start,sent-start,now-sent,outgoing.attempts))
     end
     -- Multiple guild members may be listening. Keep a short window for confirmations.
+    if outgoing.cacheOwner then
+      local version={revision=outgoing.cacheRevision,digest=outgoing.cacheDigest}
+      markReplicaServed(outgoing.cacheRequest,outgoing.cacheOwner,version)
+      local job=replicaJobs[outgoing.cacheOwner];if job then markReplicaServed(job.request,outgoing.cacheOwner,version) end
+    end
     outgoing.acknowledged=true;syncConfirmed=true;syncState='Empfang bestaetigt'
   elseif kind=='REQ' and a[2]==who() then
     sendSnapshot()
   elseif kind=='HELLO' then
-    db.peers[name]={lastSeen=stamp()}; enqueueControl('ACK')
-  elseif kind=='ACK' then db.peers[name]={lastSeen=stamp()}
+    db.peers[name]={lastSeen=stamp(),cache=a[2]=='CACHE1'}; enqueueControl('ACK|CACHE1')
+  elseif kind=='ACK' then db.peers[name]={lastSeen=stamp(),cache=a[2]=='CACHE1'}
   elseif kind=='B' and a[2] then
-    pending[name]={seq=a[2],professions={},started=clock(),count=1,invalid=false}
+    pending[name]={seq=a[2],guid=decode(a[3]),revision=tonumber(a[4]),digest=a[5],relay=cacheReceiveContext and cacheReceiveContext.relay,professions={},started=clock(),count=1,invalid=false}
   elseif kind=='P' and pending[name] and pending[name].seq==a[2] then
     local p=pending[name]; p.count=p.count+1
     if #p.professions>=15 then return end
@@ -879,9 +1134,23 @@ local function onMessage(prefix,payload,channel,sender)
       enqueue('REQ|'..name)
       return
     end
+    if name~=who() then
+      local record={professions=p.professions,updated=stamp(),source='guild',guid=p.guid~='' and p.guid or nil,guildKey=currentGuildKey(),relayedBy=p.relay}
+      local digest=bookFingerprint(record)
+      local previous=replicaMetadata()[name]
+      if p.digest and p.digest~='' and p.digest~=digest then
+        pending[name]=nil
+        say('Rezeptbuch von '..name..' nicht uebernommen: Inhaltspruefung fehlgeschlagen.');return
+      end
+      local revision=p.revision or 0
+      if not previous or revision>previous.revision or (revision==previous.revision and previous.digest==digest) then
+        db.characters[name]=record
+        replicaMetadata()[name]={revision=revision,digest=digest,guid=record.guid,guildKey=record.guildKey}
+        local job=replicaJobs[name];if job then markReplicaServed(job.request,name,replicaMetadata()[name]) end
+      end
+    end
     recentCompleted[name..':'..p.seq]=clock()
     enqueueControl('OK|'..p.seq)
-    if name~=who() then db.characters[name]={professions=p.professions,updated=stamp(),source='guild'} end
     pending[name]=nil
     syncState='Empfangen von '..name
     say('Berufsdaten von '..name..' empfangen ('..#p.professions..' Berufe).')
@@ -1209,7 +1478,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.1'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.3'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1669,6 +1938,7 @@ frame:RegisterEvent('PLAYER_LOGIN')
 frame:RegisterEvent('CHAT_MSG_ADDON')
 frame:RegisterEvent('TRADE_SKILL_SHOW')
 frame:RegisterEvent('TRADE_SKILL_LIST_UPDATE')
+frame:RegisterEvent('TRADE_SKILL_CLOSE')
 frame:RegisterEvent('SKILL_LINES_CHANGED')
 frame:RegisterEvent('GUILD_ROSTER_UPDATE')
 frame:RegisterEvent('GET_ITEM_INFO_RECEIVED')
@@ -1687,10 +1957,10 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     registerPrefix()
-    say('Testversion 0.8.1 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.8.3 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
-    capture(false); enqueue('HELLO')
+    capture(false); enqueue('HELLO|CACHE1')
   elseif event=='CHAT_MSG_ADDON' then
     local rawPrefix,_,rawChannel=...
     transportStatus.raw=transportStatus.raw+1
@@ -1698,10 +1968,9 @@ frame:SetScript('OnEvent',function(_,event,...)
     onMessage(...)
   elseif event=='GUILD_ROSTER_UPDATE' then migrateLocalAlias(who())
   elseif event=='GET_ITEM_INFO_RECEIVED' then itemRefreshElapsed=1
-  elseif event=='TRADE_SKILL_SHOW' or event=='TRADE_SKILL_LIST_UPDATE' then
-    -- Forever does not reliably expose the active profession; only auto-capture
-    -- recipes after the user has explicitly selected the profession via /spb scan.
-    if clock()-lastScan>3 then lastScan=clock(); capture(false,activeProfession) end
+  elseif event=='TRADE_SKILL_SHOW' then scheduleAutomaticScan(true)
+  elseif event=='TRADE_SKILL_LIST_UPDATE' then scheduleAutomaticScan(false)
+  elseif event=='TRADE_SKILL_CLOSE' then tradeWindowOpen=false;automaticScan=nil
   elseif event=='SKILL_LINES_CHANGED' then
     if clock()-lastScan>5 then lastScan=clock(); capture(false) end
   end
@@ -1730,6 +1999,8 @@ frame:SetScript('OnUpdate',function(_,dt)
     end
     unresolvedMaterials=stillMissing
   end
+  updateReplicas()
+  updateAutomaticScan()
   updateGuildReply()
   elapsed=elapsed+dt
   if elapsed<SEND_INTERVAL then return end
@@ -1945,7 +2216,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
     say('Sync: '..syncStats.sent..' Sendeversuche, '..syncStats.received..' empfangen, '..syncStats.data..' Datenpakete, '..syncStats.ok..' OK, '..syncStats.miss..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
     local n=0;for sender,box in pairs(numberedPending) do n=n+1;say('Empfang von '..sender..': '..box.received..'/'..box.total..' Pakete') end
     if n==0 then say('Kein unvollstaendiger Empfang gespeichert.') end
-  elseif cmd=='ping' then enqueue('HELLO'); say('Ping eingereiht.')
+  elseif cmd=='ping' then enqueue('HELLO|CACHE1'); say('Ping eingereiht.')
   elseif cmd=='peers' then
     local n=0; for name in pairs(db.peers) do say('Kontakt: '..name); n=n+1 end
     if n==0 then say('Keine anderen Addon-Nutzer erkannt.') end

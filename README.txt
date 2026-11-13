@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.8.1 (Testversion)
+SpucknapfBerufe v0.8.3 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -194,3 +194,33 @@ Uploads werden nicht abgebrochen. Offline-Charakterdaten werden nicht
 weitergereicht. Alle Teilnehmer benoetigen 0.8.1 fuer automatische Antworten.
 Optional /spb anfordern. Alle Funktionen aus 0.8.0 enthalten.
 Noch nicht im WoW-Client getestet.
+
+
+v0.8.2 TEST: Automatischer Hintergrundscan beim Oeffnen/Aktualisieren
+des originalen Berufsfensters. Spucknapf-Fenster darf geschlossen bleiben.
+Aktiver WoW-Beruf und vorhandene SkillLine-ID muessen uebereinstimmen.
+Verzoegerung, stabile Rezeptliste und begrenzte Wiederholungen bis Daten
+geladen. Fenster schliessen verwirft wartenden Scan. Kein Login-Rezeptscan.
+Automatische Scans duerfen keine bekannten Rezepte entfernen und keine
+fehlenden Rezeptdetails uebernehmen. Kein automatischer Versand.
+Gildendaten anfordern sendet den aktualisierten lokalen Stand.
+Noch nicht im WoW-Client getestet.
+
+
+v0.8.3 TEST: Versionierter Gildencache fuer Offline-Handwerker.
+Nur tatsaechliche lokale Aenderungen werden automatisch verteilt,
+8 Sekunden gesammelt, maximal ein automatischer Buchversand pro Minute.
+Ohne kuerzlich bestaetigten Cache-Empfaenger zunaechst nur kleiner Ping.
+Gildendaten anfordern kann gespeicherte Buecher anderer Handwerker
+liefern. Originalautor, Revision, Inhalt und Gilde bleiben erhalten.
+Aeltere Kopien ersetzen neuere nicht. Empfangene Buecher loesen KEINEN
+automatischen Weiterversand aus. Antworten sind zeitversetzt; bereits
+gelieferte Versionen werden bei weiteren Antworten uebersprungen.
+Neue Cache-Pakete werden nur von 0.8.3+ verstanden. Manuelles Synchroni-
+sieren bleibt mit dem bisherigen Protokoll verfuegbar.
+Start: Alle Teilnehmer updaten; jeder Handwerker oeffnet einmal seine
+Berufe, waehrend ein weiterer aktueller Addon-Nutzer online ist.
+Mindestens ein Empfaenger dieser Daten muss spaeter online sein.
+Bestehende alte Buecher ohne Versions-/Gildennachweis werden nicht
+blind weitergereicht. Keine externe Speicherung oder Hintergrundserver.
+Neue Mehrclient-Laufzeittests bestanden; WoW-Client-Test steht aus.

@@ -644,7 +644,7 @@ local function style(f,border)
   if f.SetBackdrop then
     -- Dark warm surfaces; separate decorative textures frame the panels.
     f:SetBackdrop({bgFile='Interface\\Buttons\\WHITE8X8',
-      edgeFile=border and 'Interface\\DialogFrame\\UI-DialogBox-Border' or nil,
+      edgeFile=nil,
       tile=false,edgeSize=border and 22 or 0,
       insets={left=border and 6 or 0,right=border and 6 or 0,top=border and 6 or 0,bottom=border and 6 or 0}})
     f:SetBackdropColor(border and 0.065 or 0.095,border and 0.045 or 0.070,border and 0.028 or 0.045,1)
@@ -652,29 +652,40 @@ local function style(f,border)
   end
 end
 
--- Decorative textures only: no mouse handlers or changes to profession data.
-local function decoratePanel(panel,header)
-  local goldPath='Interface\\AddOns\\SpucknapfBerufe\\Textures\\GoldFrame\\'
-  local function piece(file,a,b,x,y,w,h)
-    local t=panel:CreateTexture(nil,'BORDER')
-    t:SetTexture(goldPath..file);t:SetPoint(a,panel,b,x,y)
-    if w then t:SetWidth(w) end
-    if h then t:SetHeight(h) end
-    t:SetVertexColor(0.72,0.61,0.43,0.95)
-    return t
+-- Continuous inset borders: fixed thickness, no corner images or stretched joins.
+local function drawGoldFrame(panel,outer)
+  local function ring(inset,size,r,g,b)
+    local function strip(a,b,x,y,w,h)
+      local t=panel:CreateTexture(nil,'BORDER')
+      t:SetTexture('Interface\\Buttons\\WHITE8X8')
+      t:SetVertexColor(r,g,b,1)
+      t:SetPoint(a,panel,a,x,y)
+      t:SetPoint(b,panel,b,w,h)
+      return t
+    end
+    local top=strip('TOPLEFT','TOPRIGHT',inset,-inset,-inset,-inset)
+    top:SetHeight(size)
+    local bottom=strip('BOTTOMLEFT','BOTTOMRIGHT',inset,inset,-inset,inset)
+    bottom:SetHeight(size)
+    local left=strip('TOPLEFT','BOTTOMLEFT',inset,-inset-size,inset,inset+size)
+    left:SetWidth(size)
+    local right=strip('TOPRIGHT','BOTTOMRIGHT',-inset,-inset-size,-inset,inset+size)
+    right:SetWidth(size)
   end
-  local top=piece('Horizontal','TOPLEFT','TOPLEFT',16,0,nil,5)
-  top:SetPoint('TOPRIGHT',panel,'TOPRIGHT',-16,0)
-  local bottom=piece('Horizontal','BOTTOMLEFT','BOTTOMLEFT',16,0,nil,5)
-  bottom:SetPoint('BOTTOMRIGHT',panel,'BOTTOMRIGHT',-16,0)
-  local left=piece('Vertical','TOPLEFT','TOPLEFT',0,-16,5,nil)
-  left:SetPoint('BOTTOMLEFT',panel,'BOTTOMLEFT',0,16)
-  local right=piece('Vertical','TOPRIGHT','TOPRIGHT',0,-16,5,nil)
-  right:SetPoint('BOTTOMRIGHT',panel,'BOTTOMRIGHT',0,16)
-  piece('CornerTL','TOPLEFT','TOPLEFT',0,0,20,20)
-  piece('CornerTR','TOPRIGHT','TOPRIGHT',0,0,20,20)
-  piece('CornerBL','BOTTOMLEFT','BOTTOMLEFT',0,0,20,20)
-  piece('CornerBR','BOTTOMRIGHT','BOTTOMRIGHT',0,0,20,20)
+  if outer then
+    ring(0,2,0.13,0.08,0.035)
+    ring(2,1,0.91,0.71,0.35)
+    ring(3,2,0.53,0.34,0.12)
+    ring(5,1,0.78,0.57,0.25)
+    ring(6,1,0.20,0.12,0.05)
+  else
+    ring(0,1,0.18,0.11,0.045)
+    ring(1,1,0.56,0.39,0.17)
+    ring(2,1,0.27,0.18,0.08)
+  end
+end
+local function decoratePanel(panel,header)
+  drawGoldFrame(panel,false)
   if header then
     local band=panel:CreateTexture(nil,'BACKGROUND')
     band:SetTexture('Interface\\Buttons\\WHITE8X8')
@@ -715,31 +726,15 @@ local function createUI()
   titleRule:SetVertexColor(0.67,0.46,0.19,0.8)
   titleRule:SetPoint('TOPLEFT',ui,'TOPLEFT',17,-42)
   titleRule:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-17,-42);titleRule:SetHeight(1)
-  -- Nine-piece fantasy gold border: corner images stay fixed while the edges
-  -- stretch with the window. The content and resize grip remain untouched.
-  local goldPath='Interface\\AddOns\\SpucknapfBerufe\\Textures\\GoldFrame\\'
-  local function borderPart(filename,point,relativePoint,x,y,w,h)
-    local tex=ui:CreateTexture(nil,'BORDER')
-    tex:SetTexture(goldPath..filename)
-    tex:SetPoint(point,ui,relativePoint,x,y)
-    tex:SetSize(w,h)
-    return tex
-  end
-  borderPart('CornerTL','TOPLEFT','TOPLEFT',-3,3,52,52)
-  borderPart('CornerTR','TOPRIGHT','TOPRIGHT',3,3,52,52)
-  borderPart('CornerBL','BOTTOMLEFT','BOTTOMLEFT',-3,-3,52,52)
-  borderPart('CornerBR','BOTTOMRIGHT','BOTTOMRIGHT',3,-3,52,52)
-  local topEdge=ui:CreateTexture(nil,'BORDER');topEdge:SetTexture(goldPath..'Horizontal')
-  topEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',46,3);topEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-46,3);topEdge:SetHeight(16)
-  local bottomEdge=ui:CreateTexture(nil,'BORDER');bottomEdge:SetTexture(goldPath..'Horizontal')
-  bottomEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',46,-3);bottomEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-46,-3);bottomEdge:SetHeight(16)
-  local leftEdge=ui:CreateTexture(nil,'BORDER');leftEdge:SetTexture(goldPath..'Vertical')
-  leftEdge:SetPoint('TOPLEFT',ui,'TOPLEFT',-3,-46);leftEdge:SetPoint('BOTTOMLEFT',ui,'BOTTOMLEFT',-3,46);leftEdge:SetWidth(16)
-  local rightEdge=ui:CreateTexture(nil,'BORDER');rightEdge:SetTexture(goldPath..'Vertical')
-  rightEdge:SetPoint('TOPRIGHT',ui,'TOPRIGHT',3,-46);rightEdge:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',3,46);rightEdge:SetWidth(16)
-  local title=makeText(ui,18,-12,810,27,true);title:SetText('|cffffd27aSpucknapfBerufe|r  |cffb7a080Der salzige Spucknapf|r')
+  drawGoldFrame(ui,true)
+  local title=makeText(ui,0,0,100,27,true)
+  title:ClearAllPoints()
+  title:SetPoint('TOPLEFT',ui,'TOPLEFT',42,-12)
+  title:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-42,-12)
+  title:SetJustifyH('CENTER')
+  resizeFont(title,18)
+  title:SetText('|cffffd27aDer salzige Spucknapf|r')
   local close=CreateFrame('Button',nil,ui,'UIPanelCloseButton');close:SetPoint('TOPRIGHT',-3,-3)
-  local hint=makeText(ui,18,-41,910,17);hint:SetText('|cffc5b394Beruf  /  Handwerker  /  Rezeptbuch     •     Gespeicherte Gildendaten|r')
   -- Compact action bar. Use the same core functions as the slash commands.
   ui.actionButtons={}
   local function actionButton(label,x,width,callback)
@@ -891,14 +886,16 @@ local function createUI()
   ui.materialScrollHint=makeText(detailPanel,12,-87,300,15)
   resizeFont(ui.materialScrollHint,11)
   ui.materialScrollHint:SetText('')
-  -- Original, low-contrast sepia profession illustrations, stored locally as TGA.
+  -- Use the exact Blizzard icons from the profession list as faint watermarks.
   -- ARTWORK on the parent sits behind child buttons; their backdrops remain readable.
   ui.professionWatermarks={}
+  ui.professionWatermarkByColumn={}
   for _,column in ipairs({2,3}) do
     local watermark=ui.pages[column]:CreateTexture(nil,'ARTWORK')
     watermark:SetPoint('CENTER',ui.pages[column],'CENTER',0,-10)
     watermark:SetSize(255,255)
-    watermark:SetAlpha(column==2 and 0.18 or 0.13)
+    watermark:SetAlpha(column==2 and 0.10 or 0.07)
+    ui.professionWatermarkByColumn[column]=watermark
     ui.professionWatermarks[#ui.professionWatermarks+1]=watermark
   end
   -- Persistent bottom status bar, visible even while idle.
@@ -907,26 +904,62 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.6'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.7.9'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
-  ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
+  ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-42,18)
   ui.versionLabel:SetJustifyH('RIGHT')
   ui.versionLabel:SetText('|cff938c81v'..tostring(version):gsub('^v','')..'|r')
-  -- Native resize grip: the UI is reflowed, not uniformly scaled.
-  local grip=CreateFrame('Button',nil,ui)
-  grip:SetSize(20,20);grip:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-5,5)
+  -- Visible resize control; normalize the initial CENTER anchor before sizing.
+  local grip=CreateFrame('Button',nil,ui,'BackdropTemplate')
+  grip:SetSize(28,28);grip:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-5,5)
   grip:SetFrameLevel(ui:GetFrameLevel()+12)
+  style(grip,false);drawGoldFrame(grip,false)
   local gripTexture=grip:CreateTexture(nil,'OVERLAY')
-  gripTexture:SetAllPoints()
+  gripTexture:SetPoint('TOPLEFT',grip,'TOPLEFT',3,-3)
+  gripTexture:SetPoint('BOTTOMRIGHT',grip,'BOTTOMRIGHT',-3,3)
   gripTexture:SetTexture('Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up')
+  gripTexture:SetVertexColor(1,0.82,0.42,1)
   grip:SetNormalTexture(gripTexture)
-  grip:SetScript('OnMouseDown',function(self,button)
-    if button=='LeftButton' and ui.StartSizing then ui:StartSizing('BOTTOMRIGHT') end
-  end)
-  grip:SetScript('OnMouseUp',function()
-    ui:StopMovingOrSizing()
+  local function saveWindowSize()
     if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()+0.5) end
+  end
+  local function finishResize()
+    if not grip.resizing then return end
+    grip.resizing=false
+    ui:StopMovingOrSizing()
+    saveWindowSize()
+  end
+  grip:SetScript('OnEnter',function()
+    gripTexture:SetVertexColor(1,1,0.72,1)
+    if GameTooltip then
+      GameTooltip:SetOwner(grip,'ANCHOR_TOPLEFT')
+      GameTooltip:SetText('Fenstergroesse aendern')
+      GameTooltip:AddLine('Linke Maustaste halten und ziehen.',1,0.82,0.42)
+      GameTooltip:Show()
+    end
   end)
+  grip:SetScript('OnLeave',function()
+    gripTexture:SetVertexColor(1,0.82,0.42,1)
+    if GameTooltip then GameTooltip:Hide() end
+  end)
+  grip:SetScript('OnMouseDown',function(self,button)
+    if button~='LeftButton' or not ui.StartSizing then return end
+    ui:StopMovingOrSizing()
+    local left,top=ui:GetLeft(),ui:GetTop()
+    if not left or not top then return end
+    local width,height=ui:GetWidth(),ui:GetHeight()
+    local scale=ui:GetEffectiveScale()/UIParent:GetEffectiveScale()
+    ui:ClearAllPoints()
+    ui:SetPoint('TOPLEFT',UIParent,'BOTTOMLEFT',left*scale,top*scale)
+    ui:SetSize(width,height)
+    self.resizing=true
+    if GameTooltip then GameTooltip:Hide() end
+    ui:StartSizing('BOTTOMRIGHT')
+  end)
+  grip:SetScript('OnMouseUp',function(_,button)
+    if button=='LeftButton' then finishResize() end
+  end)
+  grip:SetScript('OnHide',finishResize)
   ui.resizeGrip=grip
   local function layout()
     local width,height=ui:GetWidth(),ui:GetHeight()
@@ -944,6 +977,11 @@ local function createUI()
       local panel=ui.pages[c]
       panel:ClearAllPoints();panel:SetPoint('TOPLEFT',ui,'TOPLEFT',xs[c],-131)
       panel:SetSize(ws[c],columnHeight)
+      local watermark=ui.professionWatermarkByColumn[c]
+      if watermark then
+        local size=math.max(1,math.min(ws[c]-24,columnHeight-64,320))
+        watermark:SetSize(size,size)
+      end
       ui.headers[c]:SetWidth(ws[c]-18)
       for i,row in ipairs(ui.columns[c]) do
         row:SetWidth(ws[c]-16)
@@ -1091,13 +1129,12 @@ renderUI=function()
     ['Inschriftenkunde']='Interface\\Icons\\INV_Inscription_Tradeskill01',
   }
   ui.professionIcons=professionIcons
-  local professionTextures={['Ingenieurskunst']='Engineering',['Kochkunst']='Cooking',['Lederverarbeitung']='Leatherworking',['Schmiedekunst']='Blacksmithing',['Alchemie']='Alchemy',['Schneiderei']='Tailoring',['Verzauberkunst']='Enchanting',['Juwelenschleifen']='Jewelcrafting',['Inschriftenkunde']='Inscription'}
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
   if ui.professionWatermarks then
-    local textureName=professionTextures[chosenProfession]
+    local professionIcon=professionIcons[chosenProfession]
     for _,watermark in ipairs(ui.professionWatermarks) do
-      if textureName then
-        watermark:SetTexture('Interface\\AddOns\\SpucknapfBerufe\\Textures\\'..textureName)
+      if professionIcon then
+        watermark:SetTexture(professionIcon)
         watermark:Show()
       else watermark:Hide() end
     end
@@ -1290,7 +1327,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.7.3 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.7.9 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')

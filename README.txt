@@ -1,4 +1,4 @@
-SpucknapfBerufe v0.7.6 (Testversion)
+SpucknapfBerufe v0.7.9 (Testversion)
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -56,3 +56,22 @@ staerkerer Goldrand und lokale Goldrahmen an den drei Spalten und Materialien.
 Berufsillustrationen und Buttons werden in einer folgenden Etappe verfeinert.
 Scan, Synchronisation, SavedVariables und Resize-Logik unveraendert.
 Statische Lua-5.1-Syntaxpruefung; noch nicht im WoW-Client getestet.
+
+
+v0.7.7 TEST: Zentrierter goldener Gildenname als Header. Alte Eckgrafiken
+durch durchgehende, mehrlagige rechteckige Goldrahmen ersetzt.
+Syntax statisch geprueft; WoW-Client-Test steht aus.
+
+
+v0.7.8 TEST: Blizzard-Berufssymbole aus der Berufsliste als dezente
+Hintergruende in Handwerker/Rezeptbuch (10 bzw. 7 Prozent Deckkraft).
+Quadratische Darstellung mit dynamischer Groesse; Header/Rahmen aus 0.7.7.
+Noch nicht im Spiel getestet.
+
+
+v0.7.9 TEST: Groesserer goldener Ziehgriff mit Hover-Hinweis. Vor dem
+ersten Resize wird die aktuelle Position in einen TOPLEFT-Anker umgewandelt;
+Fenstergroesse und Bildschirmposition bleiben dabei erhalten.
+Die Hinweiszeile unter dem Gildenheader entfaellt.
+Bitte ersten Resize nach /reload, Min-/Max-Groesse und Wiedereroeffnen testen.
+Statisch geprueft; der Fix muss im WoW-Client bestaetigt werden.

@@ -35,17 +35,21 @@ local function materialInfo(itemID)
     local ok,n=pcall(C_Item.GetItemNameByID,itemID)
     if ok then name=n end
   end
-  if not icon and type(GetItemIcon)=='function' then
+  if (not icon or icon==0) and type(GetItemIcon)=='function' then
     local ok,tex=pcall(GetItemIcon,itemID)
     if ok then icon=tex end
   end
-  if not icon and type(GetItemInfoInstant)=='function' then
+  if (not icon or icon==0) and type(GetItemInfoInstant)=='function' then
     local ok,_,_,_,_,tex=pcall(GetItemInfoInstant,itemID)
     if ok then icon=tex end
   end
-  if not icon and C_Item and type(C_Item.GetItemIconByID)=='function' then
+  if (not icon or icon==0) and C_Item and type(C_Item.GetItemIconByID)=='function' then
     local ok,tex=pcall(C_Item.GetItemIconByID,itemID)
     if ok then icon=tex end
+  end
+  if not icon and type(GetItemInfo)=='function' then
+    local ok,_,_,_,_,_,_,_,_,_,tex=pcall(GetItemInfo,'item:'..itemID)
+    if ok and tex then icon=tex end
   end
   if (not name or not icon) and not itemLoadRequested[itemID] then
     itemLoadRequested[itemID]=true
@@ -53,6 +57,8 @@ local function materialInfo(itemID)
       pcall(C_Item.RequestLoadItemDataByID,itemID)
     end
   end
+  if type(icon)=='number' and icon<=0 then icon=nil end
+  if type(icon)=='string' and icon=='' then icon=nil end
   return name,icon
 end
 local function countPeers() local n=0; if db and db.peers then for _ in pairs(db.peers) do n=n+1 end end; return n end
@@ -785,7 +791,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.6.8'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.6.9'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('BOTTOMRIGHT',ui,'BOTTOMRIGHT',-20,18)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -941,9 +947,12 @@ renderUI=function()
       end
     end
   end
+  if selected and #recipes==0 then
+    ritems[1]={label='Keine Rezepte gespeichert',key='empty-recipe-note'}
+  end
   setButtons(3,ritems,function(e)
     if e.category then collapsedCategories[e.category]=not collapsedCategories[e.category];offsets[3]=0
-    else chosenRecipe=e.recipe.id end
+    elseif e.recipe then chosenRecipe=e.recipe.id end
     renderUI()
   end,chosenRecipe)
   unresolvedMaterials=false
@@ -956,6 +965,9 @@ renderUI=function()
       if button then
         local itemName,icon=materialInfo(m.id)
         button.texture:SetTexture(icon or 'Interface\\Icons\\INV_Misc_QuestionMark')
+        button.texture:SetTexCoord(0,1,0,1)
+        button.texture:SetAlpha(1)
+        button.texture:Show()
         button.quantity:SetText(tostring(m.qty)..'x '..(itemName or ('Item #'..tostring(m.id))))
         button.itemID=m.id
         button.materialQty=m.qty
@@ -964,7 +976,7 @@ renderUI=function()
       end
     end
     if #mats==0 then ui.detail:SetText('|cffffd27a'..active.name..'|r  |cff91a79d• Keine Materialdaten gespeichert|r') end
-  elseif selected and not selected.complete then
+  elseif selected and #recipes==0 then
     if chosenCharacter==who() then
       ui.detail:SetText('|cffffd27aNoch keine Rezepte erfasst|r\nOeffne das originale Berufsfenster von World of Warcraft, in dem du deine Rezepte herstellst.\nKlicke anschliessend hier im Addon auf \"Scannen\", um deine erlernten Rezepte zu erfassen.\nMit \"Synchronisieren\" kannst du deine Berufsdaten danach mit anderen Gildenmitgliedern teilen.')
     else
@@ -1053,7 +1065,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     if C_ChatInfo and type(C_ChatInfo.RegisterAddonMessagePrefix)=='function' then C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
     elseif type(RegisterAddonMessagePrefix)=='function' then RegisterAddonMessagePrefix(PREFIX) end
-    say('Testversion 0.6.8 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.6.9 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO')
@@ -1081,7 +1093,12 @@ frame:SetScript('OnUpdate',function(_,dt)
           local qty=button.materialQty or 0
           button.quantity:SetText(tostring(qty)..'x '..name)
         end
-        if icon then button.texture:SetTexture(icon) end
+        if icon then
+          button.texture:SetTexture(icon)
+          button.texture:SetTexCoord(0,1,0,1)
+          button.texture:SetAlpha(1)
+          button.texture:Show()
+        end
         if not name or not icon then stillMissing=true end
       end
     end

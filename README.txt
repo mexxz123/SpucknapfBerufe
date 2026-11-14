@@ -1,4 +1,6 @@
-SpucknapfBerufe v0.8.4 (Testversion)
+SpucknapfBerufe v0.8.6 (Testversion)
+
+Neu in 0.8.6: Alle Rezepte (Anzahl) oberhalb der Kategorien, gemeinsam ein-/ausklappbar. Einzelne Kategorien bleiben separat bedienbar. Beim Oeffnen und Wechsel des Berufs/Handwerkers ist die Liste ausgeklappt. Die Anzahl zaehlt alle gespeicherten Rezepte des ausgewaehlten Handwerkers im ausgewaehlten Beruf, unabhaengig von Suche und Klappzustand. Keine dauerhafte Speicherung des Anzeigezustands oder der Anzahl. Scan, Synchronisierung und Minimap aus 0.8.5 unveraendert.
 
 Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb oeffnen - Fenster
@@ -6,8 +8,11 @@ Installiere den Ordner SpucknapfBerufe unter Interface/AddOns.
 /spb sync - gespeicherte Berufe und Rezepte an Gilde senden
 /spb list - gespeicherte Berufe anzeigen
 
-Neu: Materialnamen neben Icons, /spb sync, automatische Aktualisierung des zuletzt explizit gescannten Berufs bei Berufslisten-Events.
-Hinweis: Bei einem Berufsreiterwechsel zuerst /spb scan <Berufsname> verwenden. Vollstaendige Synchronisierung grosser Rezeptbuecher muss mit zwei Clients getestet werden.
+Neu in 0.8.5: Automatisches Erfassen des eindeutig erkannten eigenen Berufs beim Oeffnen des originalen Berufsfensters, auch bei geschlossenem Addon-Fenster. Wiederholte Ereignisse werden zusammengefasst; leere, gefilterte oder unvollstaendige Ergebnisse ersetzen keine gueltigen Rezeptdaten.
+/spb scanstatus zeigt Ereignis, Berufszuordnung, Lese-/Speicherstatus, Fehlergrund und zugehoerigen bestehenden Syncstatus. Der letzte Scanstatus bleibt nach einem Reload erhalten.
+Minimap: Relative Verankerung an der Minimap statt frueh berechneter Bildschirmposition; vorhandene Button-Sammler behalten die Kontrolle.
+Noch im WoW-Forever-Client zu testen: echte API-Rueckgaben, Berufswechsel, verlinkte Ansichten, Relog-Position und Zwei-Spieler-Synchronisierung.
+NEW_RECIPE_LEARNED ist bewusst nicht neu registriert: Zuordnung und Ereignissignatur fuer Forever sind nicht abgesichert. Aktualisierung erfolgt ueber die Ereignisse des geoeffneten Berufsfensters.
 Sichere SavedVariables vor dem Update.
 
 0.4.5: Sequenzierte Uebertragung, Paketzaehlung, Empfangsbestaetigung, Wiederholung und Schutz vor Ueberschreiben laufender Sendungen.

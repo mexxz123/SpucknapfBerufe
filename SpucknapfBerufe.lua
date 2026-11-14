@@ -292,125 +292,225 @@ local function recipeName(api, id)
   end
   return 'Rezept '..id
 end
--- Check the actual WoW profession tab when the client exposes its name.
--- Never trust a manually selected profession to identify a different open tab.
-local function activeTradeSkillName(api)
-  if type(GetTradeSkillLine)=='function' then
-    local ok,name=pcall(GetTradeSkillLine)
-    if ok and type(name)=='string' and name~='' and name~='UNKNOWN' then return name end
-  end
-  if type(api.GetTradeSkillLine)=='function' then
-    local ok,info=pcall(api.GetTradeSkillLine)
-    if ok then
-      if type(info)=='string' and info~='' then return info end
-      if type(info)=='table' then return info.name or info.professionName end
-    end
-  end
-  return nil
+-- Phase A/B: read-only client adapter, shared scanner and bounded diagnostics.
+local tradeWindowOpen=false
+local scanGeneration=0
+local scanDiagnostic={events={},last=nil,lastSaved=nil}
+local function scanPublish(status)
+  status.updatedAt=stamp()
+  scanDiagnostic.last=status
+  if db then db.lastScanStatus=status end
+end
+local function scanEvent(event)
+  scanDiagnostic.events[event]=(scanDiagnostic.events[event] or 0)+1
+  scanDiagnostic.lastEvent=event;scanDiagnostic.lastEventAt=stamp()
+end
+local function newScanStatus(mode,event)
+  local status={mode=mode,event=event,eventReceived=mode=='automatic',startedAt=stamp(),owner=who(),attempts=0,stage='scheduled',identified=false,readable=false,saved=false,recipeCount=0,sync={state='not_scheduled'}}
+  scanPublish(status);return status
+end
+local function scanWait(status,code,reason)
+  status.stage='waiting';status.code=code;status.reason=reason;scanPublish(status)
 end
 local function normalizeProfessionName(name)
-  local normalized=tostring(name or ''):lower():gsub('ä','ae'):gsub('ö','oe'):gsub('ü','ue'):gsub('ß','ss'):gsub('%s+','')
-  return normalized=='alchimie' and 'alchemie' or normalized
+  local n=tostring(name or ''):lower():gsub('ä','ae'):gsub('ö','oe'):gsub('ü','ue'):gsub('ß','ss'):gsub('%s+','')
+  local aliases={alchimie='alchemie',alchemy='alchemie',blacksmithing='schmiedekunst',enchanting='verzauberkunst',engineering='ingenieurskunst',leatherworking='lederverarbeitung',tailoring='schneiderei',cooking='kochkunst'}
+  return aliases[n] or n
 end
-local function scanRecipes(list, requested, automatic)
-  local api=C_TradeSkillUI
-  if type(api)~='table' or type(api.GetAllRecipeIDs)~='function' then
-    return 'GetAllRecipeIDs nicht verfuegbar'
+local function ownTradeSkillView(api)
+  -- Without readable ownership guards an own-looking name/ID is not proof of ownership.
+  if type(api.IsTradeSkillLinked)~='function' or (type(api.IsTradeSkillGuild)~='function' and type(api.IsTradeSkillGuildMember)~='function') then
+    return false,'ownership_api_missing','Eigene Berufsansicht nicht sicher pruefbar: Linked-/Gildenansichts-API fehlt'
   end
-  local ok,ids=pcall(api.GetAllRecipeIDs)
-  if not ok or type(ids)~='table' then return 'Rezeptliste nicht lesbar (Berufsfenster oeffnen)' end
-  local target
-  if requested and requested~='' then
-    for _,p in ipairs(list) do
-      if normalizeProfessionName(p.name)==normalizeProfessionName(requested) then target=p; break end
-    end
-    if not target then return 'Unbekannter Beruf: '..requested end
-  else
-    -- Forever's combined trade-skill UI may not expose an active profession ID.
-    local selectedID
-    if type(api.GetProfessionInfo)=='function' then
-      local good,info=pcall(api.GetProfessionInfo)
-      if good and type(info)=='table' then selectedID=tonumber(info.professionID or info.skillLineID) end
-    end
-    if selectedID then
-      for _,p in ipairs(list) do if p.id==selectedID then target=p; break end end
+  for _,key in ipairs({'IsTradeSkillLinked','IsTradeSkillGuild','IsTradeSkillGuildMember','IsNPCCrafting'}) do
+    if type(api[key])=='function' then
+      local ok,value=pcall(api[key])
+      if not ok then return false,'view_check_failed',key..' nicht lesbar' end
+      if value~=true and value~=false and value~=0 and value~=1 then return false,'view_loading',key..' liefert noch keinen eindeutigen Ansichtsstatus' end
+      if value==true or value==1 then return false,'foreign_view','Fremde oder NPC-Berufsansicht: '..key end
     end
   end
-  if not target then return 'Aktiver Beruf nicht erkannt. Bitte links einen Beruf waehlen, originales WoW-Berufsfenster oeffnen und auf Scannen klicken.' end
-  local activeName=activeTradeSkillName(api)
-  if activeName and normalizeProfessionName(activeName)~=normalizeProfessionName(target.name) then
-    return 'Scan abgebrochen: In WoW ist "'..activeName..'" geoeffnet, im Addon aber "'..target.name..'" gewaehlt. Bitte das passende originale WoW-Berufsfenster oeffnen.'
+  return true
+end
+local function openProfession(api,list)
+  api=api or {}
+  local own,code,reason=ownTradeSkillView(api)
+  if not own then return nil,code,reason end
+  list=list or professions()
+  local byId,byName={},{}
+  for _,p in ipairs(list) do
+    if tonumber(p.id) and p.id>0 then
+      if byId[p.id] and byId[p.id]~=p then return nil,'ambiguous_owned','Doppelte eigene SkillLine-ID' end
+      byId[p.id]=p
+    end
+    local key=normalizeProfessionName(p.name)
+    if byName[key] and byName[key]~=p then return nil,'ambiguous_owned','Eigene Berufszuordnung ist mehrdeutig' end
+    byName[key]=p
   end
-  local learnedChecker
-  if type(api.GetRecipeInfo)=='function' then learnedChecker='info'
-  elseif type(api.IsRecipeLearned)=='function' then learnedChecker='learned' end
-  if not learnedChecker then
-    return target.name..': '..#ids..' Rezept-IDs sichtbar; Erlernstatus-API fehlt. Keine Rezepte als erlernt gespeichert. /spb probe'
-  end
-  local recipes={}
-  local incomplete=false
-  local checked,unknown=0,0
-  for _,id in ipairs(ids) do
-    if type(id)=='number' then
-      local learned, name, category, skillRequired, trivialLevel, craftedItemID,recipeSkillLine
-      if learnedChecker=='info' then
-        local good,info=pcall(api.GetRecipeInfo,id,0)
-        if good and type(info)=='table' then learned=info.learned; name=info.name; category=info.categoryName or info.recipeCategoryName or (type(info.category)=='string' and info.category or nil); if type(info.categoryID)=='number' and type(api.GetCategoryInfo)=='function' then local co,ci=pcall(api.GetCategoryInfo,info.categoryID); if co and type(ci)=='table' and type(ci.name)=='string' and ci.name~='' then category=ci.name end end; skillRequired=tonumber(info.requiredSkill or info.skillRequired or info.skillLevel); trivialLevel=tonumber(info.maxTrivialLevel);recipeSkillLine=tonumber(info.skillLineID) end
-      else
-        local good,result=pcall(api.IsRecipeLearned,id)
-        if good then learned=result end
+  local readings={}
+  local function read(source,fn)
+    if type(fn)~='function' then return end
+    local ok,value=pcall(fn)
+    if not ok then readings[#readings+1]=source..': API-Fehler';return end
+    local name,ids
+    if type(value)=='table' then
+      name=value.professionName or value.skillLineName or value.name
+      ids={value.skillLineID,value.baseSkillLineID,value.professionID}
+    elseif type(value)=='string' then name=value;ids={}
+    else readings[#readings+1]=source..': keine Daten';return end
+    local key=normalizeProfessionName(name)
+    readings[#readings+1]=source..': '..tostring(name or '?')..' / '..tostring(ids[1] or ids[2] or ids[3] or '?')
+    if name and excluded[name] then return false,'excluded_profession','Sammelberuf oder ausgeschlossener Beruf: '..name end
+    local named=byName[key]
+    local identified
+    for i=1,3 do
+      local id=tonumber(ids[i])
+      local match=id and byId[id]
+      if match then
+        if identified and identified~=match then return false,'conflicting_ids','Widerspruechliche Berufs-IDs in '..source end
+        identified=match
       end
-      if learned==true then
-        if automatic and (type(name)~='string' or name=='') then incomplete=true end
-        if automatic and recipeSkillLine and target.id and target.id>0 and recipeSkillLine~=target.id then incomplete=true end
-        local mats={}
-        if type(api.GetRecipeSchematic)=='function' then
-          local sg,schematic=pcall(api.GetRecipeSchematic,id,false)
-          if automatic and (not sg or type(schematic)~='table') then incomplete=true end
-          if sg and type(schematic)=='table' then
-            if automatic and type(schematic.reagentSlotSchematics)~='table' then incomplete=true end
-            -- Output item, not the recipe/spell ID. Some Forever recipes have no item output.
-            local output=schematic.outputItemID or schematic.outputItemId or schematic.craftedItemID or schematic.craftedItemId
-            if type(schematic.outputItem)=='table' then output=output or schematic.outputItem.itemID or schematic.outputItem.itemId end
-            if type(schematic.outputItems)=='table' and type(schematic.outputItems[1])=='table' then output=output or schematic.outputItems[1].itemID or schematic.outputItems[1].itemId end
-            craftedItemID=tonumber(output)
-            for _,slot in ipairs(schematic.reagentSlotSchematics or {}) do
-              if type(slot)=='table' then
-                local opts=slot.reagents or {}
-                local reagent=opts[1]
-                if automatic and type(reagent)~='table' then incomplete=true end
-                if type(reagent)=='table' then
-                  local item=tonumber(reagent.itemID or reagent.itemId)
-                  local qty=tonumber(reagent.quantityRequired or slot.quantityRequired)
-                  if item and qty and #mats<20 then mats[#mats+1]={id=item,qty=qty}
-                  elseif automatic then incomplete=true end
-                end
-              end
-            end
-          end
+    end
+    if named and identified and named~=identified then return false,'conflicting_identity','Berufsname und SkillLine-ID widersprechen sich in '..source end
+    return identified or named
+  end
+  local target,sources
+  sources={}
+  local inputs={{'GetBaseProfessionInfo',api.GetBaseProfessionInfo},{'GetProfessionInfo',api.GetProfessionInfo},{'C_TradeSkillUI.GetTradeSkillLine',api.GetTradeSkillLine},{'GetTradeSkillLine',GetTradeSkillLine}}
+  for _,entry in ipairs(inputs) do
+    local candidate,c,r=read(entry[1],entry[2])
+    if candidate==false then return nil,c,r,readings end
+    if candidate then
+      if target and target~=candidate then return nil,'conflicting_sources','Berufsquellen widersprechen sich; es wird nichts gespeichert',readings end
+      target=candidate;sources[#sources+1]=entry[1]
+    end
+  end
+  if not target then return nil,'profession_unresolved','Geoeffneter eigener Beruf noch nicht eindeutig erkannt',readings end
+  return {name=target.name,id=target.id,key=(target.id and target.id>0) and ('id:'..target.id) or ('name:'..normalizeProfessionName(target.name)),source=table.concat(sources,', ')},nil,nil,readings
+end
+local function activeTradeSkillName(api)
+  local identity=openProfession(api)
+  return identity and identity.name
+end
+local function scanList(api)
+  if type(api.GetAllRecipeIDs)~='function' then return nil,'recipe_api_missing','GetAllRecipeIDs fehlt' end
+  local ok,ids=pcall(api.GetAllRecipeIDs)
+  if not ok or type(ids)~='table' then return nil,'list_loading','Rezeptliste noch nicht lesbar' end
+  local out,seen,maxIndex={},{},0
+  for key,id in pairs(ids) do
+    if type(key)~='number' or key<1 or key%1~=0 or type(id)~='number' or id<=0 or id%1~=0 or seen[id] then return nil,'invalid_list','Ungueltige oder doppelte Rezept-IDs' end
+    seen[id]=true;out[#out+1]=id;maxIndex=math.max(maxIndex,key)
+  end
+  if maxIndex~=#out then return nil,'invalid_list','Lueckenhafte Rezeptliste' end
+  if #out==0 then return nil,'empty_list','Rezeptliste ist leer; vorhandene Daten bleiben erhalten' end
+  table.sort(out)
+  return out,table.concat(out,',')
+end
+local function activeRecipeFilter(api)
+  for _,key in ipairs({'GetOnlyShowMakeableRecipes','GetOnlyShowSkillUpRecipes','GetRecipeItemNameFilter'}) do
+    if type(api[key])=='function' then
+      local ok,value=pcall(api[key])
+      if not ok then return 'Filterstatus nicht lesbar: '..key end
+      if value==true or (type(value)=='string' and value:match('%S')) then return 'Aktiver Rezeptfilter: '..key end
+    end
+  end
+end
+local function recipeInfoCompat(api,id)
+  if type(api.GetRecipeInfo)~='function' then return nil end
+  -- Preserve the working Forever signature; read-only fallback for other builds.
+  local ok,value=pcall(api.GetRecipeInfo,id,0)
+  if ok and type(value)=='table' and type(value.learned)=='boolean' then return value end
+  ok,value=pcall(api.GetRecipeInfo,id)
+  if ok and type(value)=='table' then return value end
+end
+local function denseArray(value)
+  if type(value)~='table' then return false end
+  local count,maxIndex=0,0
+  for key in pairs(value) do
+    if type(key)~='number' or key<1 or key%1~=0 then return false end
+    count=count+1;maxIndex=math.max(maxIndex,key)
+  end
+  return count==maxIndex
+end
+local function scanRecipes(list,requested,automatic,context)
+  local api=C_TradeSkillUI or {}
+  local details={recipeCount=0}
+  local function fail(code,reason) details.code=code;details.reason=reason;return reason,false,details end
+  local identity,code,reason,readings=openProfession(api,list)
+  details.readings=readings
+  if not identity then return fail(code,reason) end
+  details.profession=identity.name;details.skillLineID=identity.id;details.source=identity.source
+  if requested and requested~='' and normalizeProfessionName(requested)~=normalizeProfessionName(identity.name) then return fail('wrong_profession','Geoeffneter Beruf '..identity.name..' passt nicht zu '..requested) end
+  if context and (not tradeWindowOpen or context.generation~=scanGeneration or context.key~=identity.key) then return fail('source_changed','Berufsfenster geschlossen oder Beruf gewechselt') end
+  local target
+  for _,p in ipairs(list) do if normalizeProfessionName(p.name)==normalizeProfessionName(identity.name) and (not identity.id or p.id==identity.id) then target=p;break end end
+  if not target then return fail('target_missing','Eigener Beruf nicht im lokalen Bestand gefunden') end
+  local filter=activeRecipeFilter(api)
+  if filter then return fail('filtered_list',filter..'; gespeicherte Rezepte bleiben erhalten') end
+  if type(api.IsTradeSkillReady)=='function' then
+    local ok,ready=pcall(api.IsTradeSkillReady)
+    if not ok or ready==false then return fail('data_not_ready','Berufsdaten noch nicht bereit') end
+  end
+  local ids,signature,message=scanList(api)
+  if not ids then return fail(signature,message) end
+  if type(api.GetRecipeInfo)~='function' and type(api.IsRecipeLearned)~='function' then return fail('learned_api_missing','Erlernstatus-API fehlt') end
+  local oldBy={};for _,r in ipairs(target.recipes or {}) do oldBy[r.id]=r end
+  local recipes,found={},{}
+  for _,id in ipairs(ids) do
+    local info=recipeInfoCompat(api,id)
+    local learned=info and info.learned
+    if learned==nil and type(api.IsRecipeLearned)=='function' then local ok,value=pcall(api.IsRecipeLearned,id);if ok then learned=value end end
+    if type(learned)~='boolean' then return fail('learned_loading','Erlernstatus fuer Rezept '..id..' noch nicht eindeutig') end
+    if learned then
+      local prior=oldBy[id]
+      local name=info and info.name
+      if type(name)~='string' or name=='' then name=recipeName(api,id) end
+      if type(name)~='string' or name=='' or name=='Rezept '..id then return fail('name_loading','Name fuer Rezept '..id..' noch nicht geladen') end
+      local line=info and tonumber(info.skillLineID)
+      if line and line>0 and target.id and target.id>0 and line~=target.id then return fail('recipe_wrong_profession','Rezept '..id..' meldet eine andere SkillLine-ID') end
+      local category=info and (info.categoryName or info.recipeCategoryName or (type(info.category)=='string' and info.category))
+      if info and type(info.categoryID)=='number' and type(api.GetCategoryInfo)=='function' then
+        local ok,cat=pcall(api.GetCategoryInfo,info.categoryID)
+        if ok and type(cat)=='table' and type(cat.name)=='string' and cat.name~='' then category=cat.name end
+      end
+      if type(api.GetRecipeSchematic)~='function' then return fail('materials_api_missing','GetRecipeSchematic fehlt; Materialdaten werden nicht geloescht') end
+      local ok,sch=pcall(api.GetRecipeSchematic,id,false)
+      if not ok or type(sch)~='table' or not denseArray(sch.reagentSlotSchematics) then return fail('materials_loading','Rezeptdetails fuer '..id..' noch nicht vollstaendig lesbar') end
+      local materials={}
+      for _,slot in ipairs(sch.reagentSlotSchematics) do
+        if type(slot)~='table' then return fail('materials_loading','Ungueltiger Materialslot fuer '..id) end
+        if slot.required~=false then
+          if not denseArray(slot.reagents) then return fail('materials_loading','Unvollstaendige Materialoptionen fuer '..id) end
+          local reagent=slot.reagents[1]
+          local item=type(reagent)=='table' and tonumber(reagent.itemID or reagent.itemId)
+          local qty=type(reagent)=='table' and tonumber(reagent.quantityRequired or slot.quantityRequired)
+          if not item or item<=0 or not qty or qty<=0 or #materials>=20 then return fail('materials_loading','Material oder Menge fuer '..id..' noch nicht lesbar') end
+          materials[#materials+1]={id=item,qty=qty}
         end
-        recipes[#recipes+1]={id=id,name=name or recipeName(api,id),materials=mats,category=type(category)=='string' and category or nil,skill=skillRequired,trivialLevel=trivialLevel,craftedItemID=craftedItemID}
-        checked=checked+1
-      elseif learned==nil then unknown=unknown+1 end
+      end
+      if prior then
+        local materialIds={};for _,material in ipairs(materials) do materialIds[material.id]=true end
+        for _,material in ipairs(prior.materials or {}) do if not materialIds[material.id] then return fail('materials_incomplete','Vorhandene Materialien fuer '..id..' fehlen im neuen Ergebnis') end end
+      end
+      local output=sch.outputItemID or sch.outputItemId or sch.craftedItemID or sch.craftedItemId
+      if type(sch.outputItem)=='table' then output=output or sch.outputItem.itemID or sch.outputItem.itemId end
+      if type(sch.outputItems)=='table' and type(sch.outputItems[1])=='table' then output=output or sch.outputItems[1].itemID or sch.outputItems[1].itemId end
+      recipes[#recipes+1]={id=id,name=name,materials=materials,category=(type(category)=='string' and category~='' and category) or (prior and prior.category),skill=tonumber(info and (info.requiredSkill or info.skillRequired or info.skillLevel)) or (prior and prior.skill),trivialLevel=tonumber(info and info.maxTrivialLevel) or (prior and prior.trivialLevel),craftedItemID=tonumber(output) or (prior and prior.craftedItemID)}
+      found[id]=true;details.recipeCount=#recipes
     end
   end
-  if unknown>0 then
-    return target.name..': Erlernstatus bei '..unknown..' Rezepten unklar; Daten nicht ueberschrieben. /spb probe'
-  end
-  if #recipes==0 then
-    return target.name..': Keine erlernten Rezepte geladen; vorhandene Daten bleiben erhalten. Berufsfenster oeffnen und erneut scannen.'
-  end
-  if automatic then
-    if incomplete or type(api.GetRecipeSchematic)~='function' then
-      return target.name..': Rezeptdetails noch nicht vollstaendig geladen.'
-    end
-    local found={};for _,r in ipairs(recipes) do found[r.id]=true end
-    for _,prior in ipairs(target.recipes or {}) do
-      if not found[prior.id] then return target.name..': Unvollstaendige Liste; gespeicherte Rezepte bleiben erhalten.' end
-    end
-  end
-  target.recipes=recipes; target.complete=true
-  return target.name..': '..#recipes..' erlernte Rezepte aus '..#ids..' IDs gespeichert',true
+  if #recipes==0 then return fail('empty_learned','Keine erlernten Rezepte geladen; vorhandene Daten bleiben erhalten') end
+  -- Manual and automatic scans have the same non-destructive commit rules.
+  for _,prior in ipairs(target.recipes or {}) do if not found[prior.id] then return fail('partial_list','Bekanntes Rezept '..prior.id..' fehlt; Teil-/Filterliste wird nicht gespeichert') end end
+  local after,afterCode,afterReason=openProfession(api,list)
+  if not after or after.key~=identity.key then return fail(afterCode or 'source_changed',afterReason or 'Berufsquelle hat waehrend des Lesens gewechselt') end
+  if context and (not tradeWindowOpen or context.generation~=scanGeneration) then return fail('window_closed','Berufsfenster vor dem Speichern geschlossen') end
+  local afterIds,afterSignature=scanList(api)
+  if not afterIds or afterSignature~=signature then return fail('list_changed','Rezeptliste hat sich waehrend des Lesens geaendert') end
+  local lastFilter=activeRecipeFilter(api);if lastFilter then return fail('filtered_list',lastFilter) end
+  target.recipes=recipes;target.complete=true
+  details.code='saved';details.reason=nil
+  return target.name..': '..#recipes..' erlernte Rezepte gespeichert',true,details
 end
 local function probe()
   local api=C_TradeSkillUI or {}
@@ -629,7 +729,9 @@ local function buildSnapshot(cacheOwner,cacheRequest)
   end
   return {seq=seq,messages=numbered,attempts=0,cacheOwner=cacheOwner,cacheRequest=cacheRequest,cacheRevision=meta and meta.revision,cacheDigest=meta and meta.digest}
 end
+local observeScanSync
 local function startTransfer(transfer)
+  if observeScanSync then observeScanSync('sending',transfer) end
   outgoing=transfer
   outgoing.startedAt=outgoing.startedAt or clock()
   outgoing.attemptStartedAt=clock()
@@ -721,84 +823,99 @@ local function updateGuildReply()
   lastAutoReply=clock()
   sendSnapshot()
 end
+local function scanSaved(status,details)
+  status.stage='saved';status.code='saved';status.reason=nil;status.identified=true;status.readable=true;status.saved=true;status.savedAt=stamp()
+  for key,value in pairs(details or {}) do status[key]=value end
+  local meta=ensureLocalVersion()
+  status.sync={state=automaticCacheDue and 'scheduled' or 'unchanged',revision=meta and meta.revision,digest=meta and meta.digest}
+  scanDiagnostic.lastSaved=status;scanPublish(status)
+end
+observeScanSync=function(state,transfer,sender)
+  local status=scanDiagnostic.lastSaved
+  if not status or not transfer or (transfer.cacheOwner or who())~=status.owner then return end
+  if status.sync.digest~=transfer.cacheDigest or status.sync.revision~=transfer.cacheRevision then return end
+  status.sync.state=state;status.sync.seq=transfer.seq;status.sync.updatedAt=stamp();status.sync.sender=sender
+end
 local function capture(verbose, requested)
   if not db then return end
-  if not who() then
-    if verbose then say('Spielerkennung wird noch geladen. Bitte gleich erneut scannen.') end
-    return
-  end
+  if not who() then if verbose then say('Spielerkennung wird noch geladen. Bitte gleich erneut scannen.') end;return end
   local list=mergeScan()
   local result='Berufsdaten aktualisiert; Rezepte unveraendert.'
-  local success
-  if requested and requested~='' then result,success=scanRecipes(list,requested) end
-  if success then ensureLocalVersion() end
-  db.characters[who()].updated=stamp()
-  if verbose then
-    say('Berufe erkannt: '..#list)
-    for _,p in ipairs(list) do say(p.name..': '..p.skill..'/'..p.max..' (ID '..p.id..')') end
-    say(result)
-  end
-  -- Scans only update the local book. Sync is explicitly user initiated.
-  if renderUI then renderUI() end
-end
--- The original profession window controls automatic scans, never our selected row.
-local tradeWindowOpen=false
-local automaticScan=nil
-local lastAutomaticScan=-10
-local function scheduleAutomaticScan(opened)
-  if opened then tradeWindowOpen=true end
-  if not tradeWindowOpen then return end
-  automaticScan={due=clock()+0.75,deadline=clock()+15,stable=nil}
-end
-local function automaticProfession()
-  local api=C_TradeSkillUI or {}
-  local name=activeTradeSkillName(api)
-  if type(name)~='string' or name=='' or excluded[name] then return nil end
-  local normalized=normalizeProfessionName(name)
-  local supported={alchemie=true,schmiedekunst=true,verzauberkunst=true,ingenieurskunst=true,lederverarbeitung=true,schneiderei=true,kochkunst=true}
-  if not supported[normalized] then return nil end
-  local target
-  for _,p in ipairs(professions()) do if normalizeProfessionName(p.name)==normalized then target=p;break end end
-  if not target then return nil end
-  if type(api.GetProfessionInfo)=='function' then
-    local ok,info=pcall(api.GetProfessionInfo)
-    if ok and type(info)=='table' then
-      if type(info.name)=='string' and normalizeProfessionName(info.name)~=normalized then return nil end
-      local id=tonumber(info.skillLineID)
-      if id and id>0 and target.id and target.id>0 and id~=target.id then return nil end
+  if requested and requested~='' then
+    local status=newScanStatus('manual','manual');status.attempts=1
+    local success,details
+    result,success,details=scanRecipes(list,requested)
+    if success then scanSaved(status,details) else
+      for key,value in pairs(details or {}) do status[key]=value end
+      status.identified=details and details.profession~=nil;status.stage='blocked';scanPublish(status)
     end
   end
-  return target.name
+  db.characters[who()].updated=stamp()
+  if verbose then say('Berufe erkannt: '..#list);say(result) end
+  if renderUI then renderUI() end
+end
+-- Coalesce events without moving the first deadline; only real tab changes start a new generation.
+local automaticScan=nil
+local lastAutomaticScan=-10
+local function automaticProfession()
+  return openProfession(C_TradeSkillUI or {},professions())
+end
+local function scheduleAutomaticScan(opened)
+  local event=opened and 'TRADE_SKILL_SHOW' or 'TRADE_SKILL_LIST_UPDATE'
+  scanEvent(event)
+  if opened then tradeWindowOpen=true end
+  if not tradeWindowOpen then return end
+  local identity=automaticProfession()
+  if automaticScan and not (identity and automaticScan.key and automaticScan.key~=identity.key) then
+    automaticScan.status.lastEvent=event
+    if identity and not automaticScan.key then automaticScan.key=identity.key end
+    return
+  end
+  scanGeneration=scanGeneration+1
+  if automaticScan then automaticScan.status.stage='cancelled';automaticScan.status.reason='Berufswechsel';scanPublish(automaticScan.status) end
+  automaticScan={due=clock()+0.75,deadline=clock()+15,generation=scanGeneration,key=identity and identity.key,status=newScanStatus('automatic',event)}
+end
+local function closeAutomaticScan()
+  scanEvent('TRADE_SKILL_CLOSE');tradeWindowOpen=false;scanGeneration=scanGeneration+1
+  if automaticScan then local status=automaticScan.status;status.stage='cancelled';status.code='window_closed';status.reason='Berufsfenster vor Abschluss geschlossen';scanPublish(status) end
+  automaticScan=nil
 end
 local function updateAutomaticScan()
   local task=automaticScan
   if not task or not db or not tradeWindowOpen or clock()<task.due then return end
-  if clock()>task.deadline then automaticScan=nil;return end
+  if clock()>task.deadline then task.status.stage='timeout';scanPublish(task.status);automaticScan=nil;return end
   if clock()-lastAutomaticScan<2 then task.due=lastAutomaticScan+2;return end
-  task.due=clock()+0.6
-  local name=automaticProfession()
-  local api=C_TradeSkillUI or {}
-  if not name or not who() or type(api.GetAllRecipeIDs)~='function' then task.stable=nil;return end
-  local ok,ids=pcall(api.GetAllRecipeIDs)
-  if not ok or type(ids)~='table' or #ids==0 then task.stable=nil;return end
-  local sorted={}
-  for _,id in ipairs(ids) do
-    if type(id)~='number' then task.stable=nil;return end
-    sorted[#sorted+1]=id
-  end
-  table.sort(sorted)
-  local signature=normalizeProfessionName(name)..':'..table.concat(sorted,',')
-  if task.stable~=signature then task.stable=signature;return end
-  -- Recheck immediately before committing; tab switches invalidate the task.
-  if automaticProfession()~=name then task.stable=nil;return end
+  task.due=clock()+0.6;task.status.attempts=task.status.attempts+1
+  local identity,code,reason,readings=automaticProfession()
+  task.status.readings=readings
+  if not identity or not who() then task.stable=nil;scanWait(task.status,code or 'owner_loading',reason or 'Spielerkennung noch nicht geladen');return end
+  if task.key and task.key~=identity.key then automaticScan=nil;scheduleAutomaticScan(false);return end
+  task.key=identity.key;task.status.identified=true;task.status.profession=identity.name;task.status.skillLineID=identity.id;task.status.source=identity.source
+  local ids,signature,message=scanList(C_TradeSkillUI or {})
+  if not ids then task.stable=nil;scanWait(task.status,signature,message);return end
+  local stable=identity.key..':'..signature
+  if task.stable~=stable then task.stable=stable;scanWait(task.status,'list_stabilizing','Warte auf stabile Rezeptliste');return end
   local list=mergeScan()
-  local _,success=scanRecipes(list,name,true)
+  local _,success,details=scanRecipes(list,identity.name,true,task)
   if success then
-    lastAutomaticScan=clock();automaticScan=nil
-    ensureLocalVersion()
+    lastAutomaticScan=clock();automaticScan=nil;scanSaved(task.status,details)
     local record=db.characters[who()];if record then record.updated=stamp() end
     if renderUI then renderUI() end
+  else
+    for key,value in pairs(details or {}) do task.status[key]=value end
+    scanWait(task.status,details.code,details.reason)
   end
+end
+local function reportScanStatus()
+  local status=scanDiagnostic.last or (db and db.lastScanStatus)
+  say('Scan-Ereignis: '..tostring(scanDiagnostic.lastEvent or '-')..' | SHOW='..(scanDiagnostic.events.TRADE_SKILL_SHOW or 0)..' LIST='..(scanDiagnostic.events.TRADE_SKILL_LIST_UPDATE or 0)..' CLOSE='..(scanDiagnostic.events.TRADE_SKILL_CLOSE or 0))
+  if not status then say('Noch kein Scanstatus gespeichert.');return end
+  say('Scan: '..tostring(status.mode)..' / '..tostring(status.stage)..' | '..tostring(status.profession or '?')..' (SkillLine '..tostring(status.skillLineID or '?')..') | Rezepte '..tostring(status.recipeCount or 0))
+  say('Erkannt='..tostring(status.identified)..', lesbar='..tostring(status.readable)..', gespeichert='..tostring(status.saved)..' | Zeitpunkt '..tostring(status.savedAt or status.updatedAt)..' | Versuche '..tostring(status.attempts))
+  if status.reason then say(tostring(status.code)..': '..status.reason) end
+  for _,reading in ipairs(status.readings or {}) do say(reading) end
+  local saved=scanDiagnostic.lastSaved or status
+  say('Scan-Sync: '..tostring(saved.sync and saved.sync.state or 'not_scheduled')..' | Bestaetigt von '..tostring(saved.sync and saved.sync.sender or '-'))
 end
 local function show()
   local count=0
@@ -1089,6 +1206,7 @@ local function onMessage(prefix,payload,channel,sender)
       markReplicaServed(outgoing.cacheRequest,outgoing.cacheOwner,version)
       local job=replicaJobs[outgoing.cacheOwner];if job then markReplicaServed(job.request,outgoing.cacheOwner,version) end
     end
+    observeScanSync('confirmed',outgoing,name)
     outgoing.acknowledged=true;syncConfirmed=true;syncState='Empfang bestaetigt'
   elseif kind=='REQ' and a[2]==who() then
     sendSnapshot()
@@ -1163,7 +1281,15 @@ local chosenProfession,chosenCharacter,chosenRecipe=nil,nil,nil
 local searchText=''
 local recipeSort='name'
 local collapsedCategories={}
+local allRecipesCollapsed=false
 local offsets={0,0,0}
+local function resetRecipeExpansion()
+  collapsedCategories={};allRecipesCollapsed=false;offsets[3]=0
+end
+local function recipeDisclosure(collapsed)
+  local texture=collapsed and 'Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up' or 'Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up'
+  return '|T'..texture..':14:14|t '
+end
 local ROWS=30 -- pre-create enough rows for a tall resized window
 local visibleRows=13
 local materialOffset=0
@@ -1478,7 +1604,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.4'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.6'
   ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1626,6 +1752,10 @@ local function createUI()
       self.status:SetText('|cffbfa77a'..syncState..'|r')
     end
   end)
+  ui:SetScript('OnShow',function()
+    resetRecipeExpansion()
+    if renderUI and db then renderUI() end
+  end)
   ui:Hide()
 end
 local function matches(str)
@@ -1641,17 +1771,20 @@ local function setButtons(column,items,callback,selected)
         local v=entry.recipe and (tonumber(entry.recipe.trivialLevel) or tonumber(entry.recipe.skill))
         row.rank:SetText('') -- Schwierigkeit bleibt nur fuer Sortierung gespeichert
       end
-      local isSelected=(not entry.category and entry.key==selected)
+      local isSelected=(not entry.category and not entry.allRecipes and entry.key==selected)
+      row.isAllRecipes=entry.allRecipes
       row.isSelected=isSelected
       if row.selectionMarker then
         if isSelected then row.selectionMarker:Show() else row.selectionMarker:Hide() end
       end
       if row.SetBackdropColor then
-        if isSelected then row:SetBackdropColor(0.12,0.29,0.24,0.92)
+        if entry.allRecipes then row:SetBackdropColor(0.20,0.15,0.075,0.92)
+        elseif isSelected then row:SetBackdropColor(0.12,0.29,0.24,0.92)
         else row:SetBackdropColor(0.10,0.085,0.065,0.88) end
       end
       if row.SetBackdropBorderColor then
-        if isSelected then row:SetBackdropBorderColor(0.38,0.78,0.63,1)
+        if entry.allRecipes then row:SetBackdropBorderColor(0.48,0.36,0.16,1)
+        elseif isSelected then row:SetBackdropBorderColor(0.38,0.78,0.63,1)
         else row:SetBackdropBorderColor(0.25,0.22,0.17,1) end
       end
       row.label:ClearAllPoints()
@@ -1660,8 +1793,8 @@ local function setButtons(column,items,callback,selected)
         if icon then row.professionIcon:SetTexture(icon);row.professionIcon:Show()
         else row.professionIcon:Hide() end
       end
-      row.label:SetPoint('TOPLEFT',row,'TOPLEFT',row.professionIcon and 32 or (isSelected and 20 or 7),-2)
-      row.label:SetText((entry.category and '|cffffd27a' or isSelected and '|cffb8ffe4' or '|cffe8ddc6')..entry.label..'|r')
+      row.label:SetPoint('TOPLEFT',row,'TOPLEFT',row.professionIcon and 32 or (entry.indent or (isSelected and 20 or 7)),-2)
+      row.label:SetText(((entry.category or entry.allRecipes) and '|cffffd27a' or isSelected and '|cffb8ffe4' or '|cffe8ddc6')..entry.label..'|r')
       row:Show();row:SetScript('OnClick',function() callback(entry) end)
       row.recipeID=entry.recipe and entry.recipe.id or nil
       row.craftedItemID=entry.recipe and entry.recipe.craftedItemID or nil
@@ -1688,12 +1821,13 @@ local function setButtons(column,items,callback,selected)
       end)
       row:SetScript('OnLeave',function(self)
         if self.SetBackdropColor then
-          if self.isSelected then self:SetBackdropColor(0.12,0.29,0.24,0.92)
+          if self.isAllRecipes then self:SetBackdropColor(0.20,0.15,0.075,0.92)
+          elseif self.isSelected then self:SetBackdropColor(0.12,0.29,0.24,0.92)
           else self:SetBackdropColor(0.10,0.085,0.065,0.88) end
         end
         if GameTooltip then GameTooltip:Hide() end
       end)
-    else row:Hide();if row.professionIcon then row.professionIcon:Hide() end;row.isSelected=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
+    else row:Hide();if row.professionIcon then row.professionIcon:Hide() end;row.isSelected=false;row.isAllRecipes=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
   end
 end
 renderUI=function()
@@ -1733,7 +1867,7 @@ renderUI=function()
     end
   end
   ui.professionIcons=professionIcons
-  if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil end
+  if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil;resetRecipeExpansion() end
   if ui.professionWatermarks then
     local professionIcon=professionIcons[chosenProfession]
     for _,watermark in ipairs(ui.professionWatermarks) do
@@ -1755,7 +1889,7 @@ renderUI=function()
     end
     if include then pitems[#pitems+1]={label=name,name=name,key=name} end
   end
-  setButtons(1,pitems,function(e) chosenProfession=e.name;selectedScanProfession=e.name;chosenCharacter=nil;chosenRecipe=nil;offsets[2]=0;offsets[3]=0;renderUI() end,chosenProfession)
+  setButtons(1,pitems,function(e) if chosenProfession~=e.name then resetRecipeExpansion() end;chosenProfession=e.name;selectedScanProfession=e.name;chosenCharacter=nil;chosenRecipe=nil;offsets[2]=0;offsets[3]=0;renderUI() end,chosenProfession)
   local members=professionMap[chosenProfession] or {}
   table.sort(members,function(a,b) if a.prof.skill==b.prof.skill then return a.char<b.char end return a.prof.skill>b.prof.skill end)
   local mitems={};local selected
@@ -1766,7 +1900,7 @@ renderUI=function()
     if m.char==chosenCharacter then selected=m.prof end
   end
   if not selected and members[1] then chosenCharacter=members[1].char;selected=members[1].prof;chosenRecipe=nil end
-  setButtons(2,mitems,function(e) chosenCharacter=e.char;chosenRecipe=nil;offsets[3]=0;renderUI() end,chosenCharacter)
+  setButtons(2,mitems,function(e) if chosenCharacter~=e.char then resetRecipeExpansion() end;chosenCharacter=e.char;chosenRecipe=nil;offsets[3]=0;renderUI() end,chosenCharacter)
   local recipes=selected and selected.recipes or {};local ritems={};local active
   local groups={};local categories={};local hasSkills=false
   for _,r in ipairs(recipes) do
@@ -1784,6 +1918,8 @@ renderUI=function()
     else ui.skillNote:SetText('') end
   end
   table.sort(categories)
+  ritems[1]={label=recipeDisclosure(allRecipesCollapsed)..'Alle Rezepte ('..#recipes..')',key='all-recipes',allRecipes=true}
+  if not allRecipesCollapsed then
   for _,cat in ipairs(categories) do
     local group=groups[cat]
     table.sort(group,function(a,b)
@@ -1793,18 +1929,21 @@ renderUI=function()
       end
       return tostring(a.name)<tostring(b.name)
     end)
-    ritems[#ritems+1]={label=(collapsedCategories[cat] and '+ ' or '- ')..cat..' ('..#group..')',key='cat:'..cat,category=cat}
-    if not collapsedCategories[cat] or searchText~='' then
+    ritems[#ritems+1]={label=recipeDisclosure(collapsedCategories[cat])..cat..' ('..#group..')',key='cat:'..cat,category=cat,indent=19}
+    if not collapsedCategories[cat] then
       for _,r in ipairs(group) do
-        ritems[#ritems+1]={label='  '..r.name,recipe=r,key=r.id}
+        ritems[#ritems+1]={label=r.name,recipe=r,key=r.id,indent=35}
       end
     end
   end
   if selected and #recipes==0 then
-    ritems[1]={label='Noch keine Rezepte gescannt',key='empty-recipe-note'}
+    ritems[#ritems+1]={label='Noch keine Rezepte gescannt',key='empty-recipe-note',indent=19}
   end
+  end -- allRecipesCollapsed
   setButtons(3,ritems,function(e)
-    if e.category then collapsedCategories[e.category]=not collapsedCategories[e.category];offsets[3]=0
+    if e.allRecipes then
+      if allRecipesCollapsed then resetRecipeExpansion() else allRecipesCollapsed=true;offsets[3]=0 end
+    elseif e.category then collapsedCategories[e.category]=not collapsedCategories[e.category];offsets[3]=0
     elseif e.recipe then if chosenRecipe~=e.recipe.id then materialOffset=0 end;chosenRecipe=e.recipe.id end
     renderUI()
   end,chosenRecipe)
@@ -1871,7 +2010,8 @@ local function positionMinimapButton()
   local distance=math.max(0,math.min(120,(db and tonumber(db.minimapDistance)) or 0))
   local radius=minimapEdgeRadius(angle,rx,ry)+distance
   minimapButton:ClearAllPoints()
-  minimapButton:SetPoint('CENTER',UIParent,'BOTTOMLEFT',mx+math.cos(angle)*radius,my+math.sin(angle)*radius)
+  local ratio=Minimap:GetEffectiveScale()/UIParent:GetEffectiveScale()
+  minimapButton:SetPoint('CENTER',Minimap,'CENTER',math.cos(angle)*radius/ratio,math.sin(angle)*radius/ratio)
 end
 local function createMinimapButton()
   if minimapButton or not Minimap then return end
@@ -1937,6 +2077,7 @@ local function createMinimapButton()
   end)
   minimapButton:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
   positionMinimapButton()
+  if Minimap.HookScript then Minimap:HookScript('OnSizeChanged',positionMinimapButton) end
 end
 
 createUI()
@@ -1964,7 +2105,8 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='PLAYER_LOGIN' then
     if not db then return end
     registerPrefix()
-    say('Testversion 0.8.4 geladen. /spb oeffnet das Fenster')
+    positionMinimapButton()
+    say('Testversion 0.8.6 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false); enqueue('HELLO|CACHE1')
@@ -1977,7 +2119,7 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='GET_ITEM_INFO_RECEIVED' then itemRefreshElapsed=1
   elseif event=='TRADE_SKILL_SHOW' then scheduleAutomaticScan(true)
   elseif event=='TRADE_SKILL_LIST_UPDATE' then scheduleAutomaticScan(false)
-  elseif event=='TRADE_SKILL_CLOSE' then tradeWindowOpen=false;automaticScan=nil
+  elseif event=='TRADE_SKILL_CLOSE' then closeAutomaticScan()
   elseif event=='SKILL_LINES_CHANGED' then
     if clock()-lastScan>5 then lastScan=clock(); capture(false) end
   end
@@ -2019,6 +2161,7 @@ frame:SetScript('OnUpdate',function(_,dt)
     transmit(table.remove(queue,1))
     if #queue==0 and outgoing then
       outgoing.sentAt=clock()
+      observeScanSync('waiting_ack',outgoing)
       outgoing.firstSentAt=outgoing.firstSentAt or outgoing.sentAt
     end
   elseif outgoing and outgoing.sentAt then
@@ -2036,6 +2179,7 @@ frame:SetScript('OnUpdate',function(_,dt)
         say('Synchronisierung nicht bestaetigt. Bitte Empfaenger pruefen.')
         reportTransport()
     say('Sync-Diagnose: '..(syncStats.received-(outgoing.receivedAtStart or 0))..' eingehende Nachrichten, '..(syncStats.ok-(outgoing.okAtStart or 0))..' OK, '..(syncStats.miss-(outgoing.missAtStart or 0))..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
+        observeScanSync('unconfirmed',outgoing)
         syncState='Keine Empfangsbestaetigung';outgoing=nil
       end
     end
@@ -2218,6 +2362,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='categories' or cmd=='kategorien' then categoryProbe(arg)
   elseif cmd=='anfordern' or cmd=='request' then requestGuildData()
   elseif cmd=='sync' then sendSnapshot(); say('Datenuebertragung geplant ('..(outgoing and #outgoing.messages or 0)..' Pakete). Bitte bis zur Empfangsbestaetigung warten.')
+  elseif cmd=='scanstatus' then reportScanStatus()
   elseif cmd=='syncstatus' then
     reportTransport()
     say('Sync: '..syncStats.sent..' Sendeversuche, '..syncStats.received..' empfangen, '..syncStats.data..' Datenpakete, '..syncStats.ok..' OK, '..syncStats.miss..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
@@ -2229,6 +2374,6 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
     if n==0 then say('Keine anderen Addon-Nutzer erkannt.') end
   elseif cmd=='list' then show()
   elseif cmd=='recipes' then recipeList(arg)
-  elseif cmd=='help' then say('/spb (Fenster ein/aus) | identity | name [Vorname Nachname] | scan [Berufsname] | api | probe | materials | recipeinfo | sync | ping | peers | list | recipes [Suche]')
+  elseif cmd=='help' then say('/spb (Fenster ein/aus) | identity | name [Vorname Nachname] | scan [Berufsname] | api | probe | materials | recipeinfo | scanstatus | sync | ping | peers | list | recipes [Suche]')
   else say('Unbekannter Befehl. /spb help') end
 end

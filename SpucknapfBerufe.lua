@@ -612,7 +612,15 @@ local function mergeScan()
 end
 -- Versioned replicas: revisions belong to the original handworker, not the relay.
 local automaticCacheDue=nil
-local lastAutomaticBroadcast=-60
+local AUTO_SYNC_QUIET=60
+local AUTO_SYNC_COOLDOWN=300
+local lastAutomaticBroadcast=-AUTO_SYNC_COOLDOWN
+local automaticPending=nil
+local automaticStateKey,automaticState,automaticStateGuild=nil,nil,nil
+local automaticRequestDue=nil
+local automaticNeedsRecheck=false
+local pendingSkillCapture=nil
+local updatePendingSkills,scanWorkPending=nil,nil
 local lastCacheHello=-60
 local replicaJobs={}
 local servedReplicaRequests={}
@@ -647,13 +655,60 @@ end
 local function replicaMetadata()
   db.replicaMetadata=db.replicaMetadata or {};return db.replicaMetadata
 end
+-- A tiny local outbox survives relogs; recipe books and wire metadata stay unchanged.
+local function refreshAutomaticDue()
+  automaticCacheDue=automaticPending and math.max(automaticPending.quietUntil,lastAutomaticBroadcast+AUTO_SYNC_COOLDOWN) or nil
+end
+local function automaticScheduleState()
+  if not db then return nil end
+  local key=playerKey() or who()
+  if not key then return nil end
+  local guild=currentGuildKey()
+  if automaticStateKey~=key or automaticStateGuild~=guild then
+    db.automaticSyncState=db.automaticSyncState or {}
+    automaticState=db.automaticSyncState[key] or {}
+    db.automaticSyncState[key]=automaticState;automaticStateKey=key;automaticStateGuild=guild;automaticNeedsRecheck=true
+    local now=clock()
+    lastAutomaticBroadcast=automaticState.lastStartedAt and now-math.max(0,stamp()-automaticState.lastStartedAt) or -AUTO_SYNC_COOLDOWN
+    if automaticState.pendingDigest and automaticState.pendingGuild==currentGuildKey() then
+      automaticPending={owner=who(),digest=automaticState.pendingDigest,revision=automaticState.pendingRevision,quietUntil=now+math.max(0,AUTO_SYNC_QUIET-math.max(0,stamp()-(automaticState.changedAt or stamp())))}
+    else automaticPending=nil end
+    refreshAutomaticDue()
+  end
+  return automaticState
+end
+local function queueAutomaticVersion(owner,meta)
+  local state=automaticScheduleState()
+  if not state then return end
+  state.pendingDigest=meta.digest;state.pendingRevision=meta.revision;state.pendingGuild=meta.guildKey;state.changedAt=stamp()+1
+  automaticPending={owner=owner,digest=meta.digest,revision=meta.revision,quietUntil=clock()+AUTO_SYNC_QUIET}
+  refreshAutomaticDue()
+end
+local function confirmAutomaticVersion(transfer)
+  if not transfer or (not transfer.autoCovered and (transfer.cacheOwner or who())~=who()) then return end
+  local state=automaticScheduleState()
+  if state and state.pendingDigest==transfer.cacheDigest and state.pendingRevision==transfer.cacheRevision then
+    state.pendingDigest=nil;state.pendingRevision=nil;state.pendingGuild=nil;state.changedAt=nil
+    if automaticPending and automaticPending.digest==transfer.cacheDigest and automaticPending.revision==transfer.cacheRevision then automaticPending=nil;refreshAutomaticDue() end
+  end
+end
+local function restoreAutomaticVersion(transfer)
+  if not transfer or not transfer.autoCovered or automaticPending then return end
+  local state=automaticScheduleState()
+  if not state or not state.pendingDigest or state.pendingGuild~=currentGuildKey() then return end
+  automaticPending={owner=who(),digest=state.pendingDigest,revision=state.pendingRevision,quietUntil=clock()+math.max(5,AUTO_SYNC_QUIET-math.max(0,stamp()-(state.changedAt or stamp())))}
+  refreshAutomaticDue()
+end
 local function ensureLocalVersion()
   local owner=who()
   if not db or not owner then return nil end
+  automaticScheduleState()
   migrateLocalAlias(owner)
   local record=db.characters[owner]
   if not record then return nil end
-  record.guildKey=currentGuildKey()
+  local guild=currentGuildKey()
+  if not guild and type(IsInGuild)=='function' and IsInGuild() then return replicaMetadata()[owner] end
+  record.guildKey=guild
   local digest=bookFingerprint(record)
   local meta=replicaMetadata()[owner]
   if not meta then
@@ -662,7 +717,10 @@ local function ensureLocalVersion()
   if not meta or meta.digest~=digest or meta.guildKey~=record.guildKey then
     meta={revision=math.max(stamp(),(meta and meta.revision or 0)+1),digest=digest,guid=playerKey(),guildKey=record.guildKey}
     replicaMetadata()[owner]=meta
-    automaticCacheDue=math.max(clock()+8,lastAutomaticBroadcast+60)
+    queueAutomaticVersion(owner,meta)
+  elseif automaticState and automaticState.pendingDigest and (automaticState.pendingDigest~=meta.digest or automaticState.pendingRevision~=meta.revision or automaticState.pendingGuild~=meta.guildKey) then
+    -- An older addon may have advanced the local book while this outbox survived.
+    queueAutomaticVersion(owner,meta)
   end
   replicaMetadata()[owner]=meta
   return meta
@@ -731,6 +789,17 @@ local function buildSnapshot(cacheOwner,cacheRequest)
 end
 local observeScanSync
 local function startTransfer(transfer)
+  automaticScheduleState()
+  if transfer.attempts==0 then
+    if transfer.automatic then
+      lastAutomaticBroadcast=clock()
+      local state=automaticScheduleState();if state then state.lastStartedAt=stamp()+1 end
+      refreshAutomaticDue()
+    end
+    if automaticPending and (transfer.cacheOwner or who())==who() and transfer.cacheDigest==automaticPending.digest and transfer.cacheRevision==automaticPending.revision then
+      transfer.autoCovered=true;automaticPending=nil;refreshAutomaticDue()
+    end
+  end
   if observeScanSync then observeScanSync('sending',transfer) end
   outgoing=transfer
   outgoing.startedAt=outgoing.startedAt or clock()
@@ -745,12 +814,13 @@ local function startTransfer(transfer)
   syncState='Senden';syncProgress=0;syncTotal=#outgoing.messages;syncConfirmed=false
   lastSend=clock()
 end
-local function sendSnapshot()
+local function sendSnapshot(automatic)
   if not db then return end
+  if automatic then automaticRequestDue=automaticRequestDue or clock();return end
+  if pendingSkillCapture and updatePendingSkills then updatePendingSkills(true) end
   if not who() then say('Spielerkennung wird noch geladen. Bitte gleich erneut versuchen.');return end
   local nextTransfer=buildSnapshot()
   if not nextTransfer then return end
-  automaticCacheDue=nil;lastAutomaticBroadcast=clock()
   if outgoing then
     -- A user may request a newer snapshot; finish and confirm this one first.
     outgoing.next=nextTransfer
@@ -821,7 +891,7 @@ local function updateGuildReply()
   pendingGuildReply=nil
   if type(IsInGuild)~='function' or not IsInGuild() or not hasLocalRecipeBook() then return end
   lastAutoReply=clock()
-  sendSnapshot()
+  sendSnapshot(true)
 end
 local function scanSaved(status,details)
   status.stage='saved';status.code='saved';status.reason=nil;status.identified=true;status.readable=true;status.saved=true;status.savedAt=stamp()
@@ -1055,12 +1125,25 @@ local function scheduleReplicaReplies(sender,request,guid)
 end
 local function updateReplicas()
   if not db then return end
+  automaticScheduleState()
+  if automaticNeedsRecheck then automaticNeedsRecheck=false;ensureLocalVersion() end
   local now=clock()
+  if pendingSkillCapture or (scanWorkPending and scanWorkPending()) then return end
   for request,entry in pairs(servedReplicaRequests) do if now-entry.when>600 then servedReplicaRequests[request]=nil end end
   for sender,when in pairs(replicaRequestSeen) do if now-when>300 then replicaRequestSeen[sender]=nil end end
   if outgoing or (lastIncomingDataAt and now-lastIncomingDataAt<2) then return end
   local guild=currentGuildKey()
   if not guild then return end
+  if now<lastAutomaticBroadcast+AUTO_SYNC_COOLDOWN then return end
+  if (automaticCacheDue and now>=automaticCacheDue) or (automaticRequestDue and now>=automaticRequestDue and not automaticCacheDue) then
+    -- Revalidate only when a send is eligible, never hash the full book each frame.
+    ensureLocalVersion()
+  end
+  if automaticRequestDue and now>=automaticRequestDue and (not automaticCacheDue or now>=automaticCacheDue) then
+    local transfer=buildSnapshot()
+    if transfer then automaticRequestDue=nil;transfer.automatic=true;startTransfer(transfer);return end
+    automaticRequestDue=now+5
+  end
   if automaticCacheDue and now>=automaticCacheDue then
     local available=false
     for _,peer in pairs(db.peers or {}) do if peer.cache and stamp()-(peer.lastSeen or 0)<120 then available=true;break end end
@@ -1075,9 +1158,9 @@ local function updateReplicas()
     if record and meta and record.guildKey==guild then
       local transfer
       if owner:sub(1,1)=='@' then transfer=buildSnapshot() else transfer=buildSnapshot(owner,'') end
-      if transfer then automaticCacheDue=nil;lastAutomaticBroadcast=now;startTransfer(transfer);return end
+      if transfer then transfer.automatic=true;startTransfer(transfer);return end
     end
-    automaticCacheDue=nil
+    automaticCacheDue=now+5
   end
   local selected,job
   for owner,task in pairs(replicaJobs) do
@@ -1085,12 +1168,16 @@ local function updateReplicas()
     local served=servedReplicaRequests[task.request]
     if task.guild~=guild or not meta or (served and served.owners[owner]==tostring(meta.revision)..':'..meta.digest) then
       replicaJobs[owner]=nil
-    elseif now>=task.due and (not job or task.due<job.due) then selected=owner;job=task end
+    elseif now>=task.due and (owner~=who() or not automaticCacheDue or now>=automaticCacheDue) and (not job or task.due<job.due) then selected=owner;job=task end
   end
   if selected then
+    if selected==who() then
+      ensureLocalVersion()
+      if automaticCacheDue and now<automaticCacheDue then return end
+    end
     replicaJobs[selected]=nil
     local transfer=buildSnapshot(selected,job.request)
-    if transfer then startTransfer(transfer) end
+    if transfer then transfer.automatic=true;startTransfer(transfer) end
   end
 end
 local function receiveCachedBook(relay,seq,parts,replay,prefix,channel)
@@ -1207,9 +1294,10 @@ local function onMessage(prefix,payload,channel,sender)
       local job=replicaJobs[outgoing.cacheOwner];if job then markReplicaServed(job.request,outgoing.cacheOwner,version) end
     end
     observeScanSync('confirmed',outgoing,name)
+    confirmAutomaticVersion(outgoing)
     outgoing.acknowledged=true;syncConfirmed=true;syncState='Empfang bestaetigt'
   elseif kind=='REQ' and a[2]==who() then
-    sendSnapshot()
+    sendSnapshot(true)
   elseif kind=='HELLO' then
     db.peers[name]={lastSeen=stamp(),cache=a[2]=='CACHE1'}; enqueueControl('ACK|CACHE1')
   elseif kind=='ACK' then db.peers[name]={lastSeen=stamp(),cache=a[2]=='CACHE1'}
@@ -1292,6 +1380,9 @@ local function recipeDisclosure(collapsed)
 end
 local ROWS=30 -- pre-create enough rows for a tall resized window
 local visibleRows=13
+local visibleProfessionRows=7
+-- UI scope only: keep the seven supported crafts; preserve all stored books.
+local supportedCraftNames={['Alchemie']=true,['Alchimie']=true,['Ingenieurskunst']=true,['Kochkunst']=true,['Lederverarbeitung']=true,['Schmiedekunst']=true,['Schneiderei']=true,['Verzauberkunst']=true}
 local materialOffset=0
 local materialColumns=4
 local activeMaterials={}
@@ -1365,6 +1456,165 @@ local function decoratePanel(panel,header)
   end
 end
 
+-- Optional presentation textures. Failed assignments leave the existing fills intact.
+local function loadWindowTexture(texture,path)
+  local ok,value=pcall(texture.SetTexture,texture,path)
+  if not ok or value==false or type(texture.GetTexture)~='function' then texture:Hide();return false end
+  local readable,loaded=pcall(texture.GetTexture,texture)
+  if not readable or loaded==nil or loaded==false or loaded==0 or loaded=='' then texture:Hide();return false end
+  return true
+end
+local function addPanelTexture(panel)
+  local texture=panel:CreateTexture(nil,'ARTWORK',nil,-7)
+  texture:Hide()
+  local diagnostic={loaded=false,layer='ARTWORK',alpha=1,tileSize=256,fallback=false}
+  panel.surfaceDiagnostic=diagnostic
+  local path='Interface\\AddOns\\SpucknapfBerufe\\Textures\\LeatherTile'
+  if not loadWindowTexture(texture,path) then
+    path='Interface\\DialogFrame\\UI-DialogBox-Background-Dark'
+    diagnostic.fallback=true
+    if not loadWindowTexture(texture,path) then diagnostic.reason='Keine Hintergrundtextur ladbar';return end
+  end
+  local ok=pcall(function()
+    texture:SetPoint('TOPLEFT',panel,'TOPLEFT',5,-31)
+    texture:SetPoint('BOTTOMRIGHT',panel,'BOTTOMRIGHT',-5,5)
+    -- The bundled albedo already contains the intended dark colour and grain.
+    if diagnostic.fallback then texture:SetVertexColor(0.75,0.65,0.52,1);texture:SetAlpha(0.48);diagnostic.alpha=0.48
+    else texture:SetVertexColor(1,1,1,1);texture:SetAlpha(1) end
+    texture:SetHorizTile(true);texture:SetVertTile(true)
+    local function tile()
+      texture:SetTexCoord(0,math.max(0.001,(panel:GetWidth()-10)/256),0,math.max(0.001,(panel:GetHeight()-36)/256))
+    end
+    tile();panel:HookScript('OnSizeChanged',tile)
+  end)
+  if not ok then texture:Hide();diagnostic.reason='Textur/Kachelung nicht einrichtbar';return end
+  texture:Show();panel.surfaceTexture=texture
+  diagnostic.loaded=true;diagnostic.texture=path
+  if not diagnostic.fallback then
+    -- New fine-grained material; a gentle colour calibration replaces the old veil.
+    local veil=panel:CreateTexture(nil,'ARTWORK',nil,-6)
+    veil:Hide()
+    if loadWindowTexture(veil,'Interface\\Buttons\\WHITE8X8') then
+      local calibrated=pcall(function()
+        veil:SetAllPoints(texture)
+        veil:SetVertexColor(41.985862732/255,39.964057922/255,33.012901306/255,1)
+        veil:SetAlpha(0.25)
+      end)
+      if calibrated then veil:Show();panel.surfaceVeil=veil;diagnostic.contrastReduction=0.25 else veil:Hide() end
+    end
+  end
+end
+local function addRowHover(row)
+  local texture=row:CreateTexture(nil,'ARTWORK',nil,-2)
+  texture:Hide()
+  if not loadWindowTexture(texture,'Interface\\QuestFrame\\UI-QuestTitleHighlight') then return end
+  local ok=pcall(function()
+    texture:SetPoint('TOPLEFT',row,'TOPLEFT',1,-1)
+    texture:SetPoint('BOTTOMRIGHT',row,'BOTTOMRIGHT',-1,1)
+    texture:SetBlendMode('ADD');texture:SetVertexColor(0.85,0.72,0.45,1);texture:SetAlpha(0.14)
+  end)
+  if not ok then texture:Hide();return end
+  texture:Hide();row.hoverTexture=texture
+end
+
+-- Independent UI decoration: fixed-width bevels and transparent gold edge glow.
+-- No borrowed button art; the original profession icon lookup remains unchanged.
+local function choiceRing(row,inset,width,color)
+  local parts={}
+  for i=1,4 do
+    local t=row:CreateTexture(nil,'BORDER')
+    t:SetTexture('Interface\\Buttons\\WHITE8X8')
+    t:SetVertexColor(color[1],color[2],color[3],color[4] or 1)
+    parts[i]=t
+  end
+  parts[1]:SetPoint('TOPLEFT',row,'TOPLEFT',inset,-inset);parts[1]:SetPoint('TOPRIGHT',row,'TOPRIGHT',-inset,-inset);parts[1]:SetHeight(width)
+  parts[2]:SetPoint('BOTTOMLEFT',row,'BOTTOMLEFT',inset,inset);parts[2]:SetPoint('BOTTOMRIGHT',row,'BOTTOMRIGHT',-inset,inset);parts[2]:SetHeight(width)
+  parts[3]:SetPoint('TOPLEFT',row,'TOPLEFT',inset,-inset-width);parts[3]:SetPoint('BOTTOMLEFT',row,'BOTTOMLEFT',inset,inset+width);parts[3]:SetWidth(width)
+  parts[4]:SetPoint('TOPRIGHT',row,'TOPRIGHT',-inset,-inset-width);parts[4]:SetPoint('BOTTOMRIGHT',row,'BOTTOMRIGHT',-inset,inset+width);parts[4]:SetWidth(width)
+  return parts
+end
+local function decorateChoiceRow(row,column)
+  row.choiceColumn=column;row.selectionArt={}
+  local function keep(parts) for _,t in ipairs(parts) do t:Hide();row.selectionArt[#row.selectionArt+1]=t end end
+  if column==1 then
+    choiceRing(row,0,1,{0.055,0.04,0.025,1})
+    local bevel=choiceRing(row,1,1,{0.33,0.24,0.13,1})
+    bevel[1]:SetVertexColor(0.53,0.40,0.23,1);bevel[2]:SetVertexColor(0.16,0.11,0.06,1)
+    choiceRing(row,2,1,{0.13,0.10,0.065,1})
+    keep(choiceRing(row,0,2,{0.95,0.74,0.25,0.95}))
+    keep(choiceRing(row,-1,1,{1,0.73,0.19,0.24}))
+    keep(choiceRing(row,-2,1,{1,0.65,0.12,0.10}))
+    local surface=row:CreateTexture(nil,'BACKGROUND',nil,1);surface:Hide()
+    if loadWindowTexture(surface,'Interface\\DialogFrame\\UI-DialogBox-Background-Dark') then
+      local ok=pcall(function()
+        surface:SetPoint('TOPLEFT',row,'TOPLEFT',3,-3);surface:SetPoint('BOTTOMRIGHT',row,'BOTTOMRIGHT',-3,3)
+        surface:SetVertexColor(0.65,0.54,0.40,1);surface:SetAlpha(0.35)
+        surface:SetHorizTile(true);surface:SetVertTile(true)
+        local function tile() surface:SetTexCoord(0,math.max(1,(row:GetWidth()-6)/128),0,1) end
+        tile();row:HookScript('OnSizeChanged',tile)
+      end)
+      if ok then surface:Show();row.buttonSurface=surface else surface:Hide() end
+    end
+  else
+    keep(choiceRing(row,0,1,{0.83,0.63,0.24,0.85}))
+  end
+end
+
+-- Presentation only. Probe beneath a hidden host so partially created templates
+-- cannot leave visible pieces behind if this client rejects the template.
+local function createWindowChrome(parent)
+  local probe=CreateFrame('Frame',nil,UIParent)
+  probe:Hide()
+  local ok,chrome=pcall(CreateFrame,'Frame',nil,probe,'PortraitFrameTemplate')
+  if not ok or not chrome then return nil,'PortraitFrameTemplate nicht verfuegbar' end
+  chrome:Hide()
+  local configured,result=pcall(function()
+    local portrait=(chrome.GetPortrait and chrome:GetPortrait()) or (chrome.PortraitContainer and chrome.PortraitContainer.portrait) or chrome.portrait
+    local title=(chrome.TitleContainer and chrome.TitleContainer.TitleText) or chrome.TitleText
+    local close=chrome.CloseButton
+    if not portrait or not portrait.SetTexture or not portrait.GetTexture then error('Portrait fehlt') end
+    if not title or not title.Hide then error('Titelfeld fehlt') end
+    if not close or not close.SetScript then error('Schliessen-Button fehlt') end
+    if not chrome.NineSlice and not chrome.TopLeftCorner then error('Rahmenregion fehlt') end
+    local function asset(path)
+      local good,value=pcall(portrait.SetTexture,portrait,path)
+      if not good or value==false then return false end
+      local readable,loaded=pcall(portrait.GetTexture,portrait)
+      return readable and loaded~=nil and loaded~=false and loaded~=0 and loaded~=''
+    end
+    local image='Interface\\FriendsFrame\\PlusManz-Alliance'
+    if not asset(image) then
+      image='Interface\\Icons\\Trade_Engineering'
+      if not asset(image) then error('Portraittextur nicht ladbar') end
+    end
+    -- Keep the template's own circular mask; never change texcoords on a masked texture.
+    if not (chrome.PortraitContainer and chrome.PortraitContainer.CircleMask) then
+      if not portrait.SetMask then error('Kreismaske fehlt') end
+      local masked,value=pcall(portrait.SetMask,portrait,'Interface\\CharacterFrame\\TempPortraitAlphaMask')
+      if not masked or value==false then error('Kreismaske nicht verfuegbar') end
+    end
+    if portrait.SetVertexColor then portrait:SetVertexColor(1,1,1,1) end
+    title:Hide()
+    -- Preserve our warm dark background, rather than inheriting the template's rock fill.
+    if chrome.Bg then chrome.Bg:Hide() end
+    if chrome.TopTileStreaks then chrome.TopTileStreaks:Hide() end
+    chrome:EnableMouse(false)
+    chrome:SetFrameStrata(parent:GetFrameStrata())
+    chrome:ClearAllPoints();chrome:SetAllPoints(parent)
+    chrome:SetFrameLevel(parent:GetFrameLevel()+1)
+    close:SetScript('OnClick',function() parent:Hide() end)
+    chrome:SetParent(parent)
+    chrome:Show()
+    parent.windowPortraitAsset=image
+    return chrome
+  end)
+  if not configured then
+    chrome:Hide();chrome:SetParent(probe)
+    return nil,'Template unvollstaendig: '..tostring(result)
+  end
+  return result
+end
+
 local function createUI()
   if ui then return end
   ui=CreateFrame('Frame','SpucknapfBerufeWindow',UIParent,'BackdropTemplate')
@@ -1381,25 +1631,41 @@ local function createUI()
   ui:SetMovable(true);ui:EnableMouse(true)
   ui:RegisterForDrag('LeftButton');ui:SetScript('OnDragStart',ui.StartMoving);ui:SetScript('OnDragStop',ui.StopMovingOrSizing)
   style(ui,true)
-  local titleBand=ui:CreateTexture(nil,'BACKGROUND')
-  titleBand:SetTexture('Interface\\Buttons\\WHITE8X8')
-  titleBand:SetVertexColor(0.22,0.13,0.055,0.75)
-  titleBand:SetPoint('TOPLEFT',ui,'TOPLEFT',10,-10)
-  titleBand:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-10,-10);titleBand:SetHeight(31)
-  local titleRule=ui:CreateTexture(nil,'BORDER')
-  titleRule:SetTexture('Interface\\Buttons\\WHITE8X8')
-  titleRule:SetVertexColor(0.67,0.46,0.19,0.8)
-  titleRule:SetPoint('TOPLEFT',ui,'TOPLEFT',17,-42)
-  titleRule:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-17,-42);titleRule:SetHeight(1)
-  drawGoldFrame(ui,true)
-  local title=makeText(ui,0,0,100,27,true)
+  local chrome,chromeReason=createWindowChrome(ui)
+  ui.windowChrome=chrome
+  ui.windowChromeMode=chrome and 'PortraitFrameTemplate' or 'fallback'
+  ui.windowChromeReason=chromeReason
+  if not chrome then
+    local titleBand=ui:CreateTexture(nil,'BACKGROUND')
+    titleBand:SetTexture('Interface\\Buttons\\WHITE8X8')
+    titleBand:SetVertexColor(0.22,0.13,0.055,0.75)
+    titleBand:SetPoint('TOPLEFT',ui,'TOPLEFT',10,-10)
+    titleBand:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-10,-10);titleBand:SetHeight(31)
+    local titleRule=ui:CreateTexture(nil,'BORDER')
+    titleRule:SetTexture('Interface\\Buttons\\WHITE8X8')
+    titleRule:SetVertexColor(0.67,0.46,0.19,0.8)
+    titleRule:SetPoint('TOPLEFT',ui,'TOPLEFT',17,-42)
+    titleRule:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-17,-42);titleRule:SetHeight(1)
+    drawGoldFrame(ui,true)
+  end
+  local titleHost=(chrome and chrome.TitleContainer) or chrome or ui
+  ui.windowTitleHost=titleHost
+  local title=makeText(titleHost,0,0,100,27,true)
   title:ClearAllPoints()
-  title:SetPoint('TOPLEFT',ui,'TOPLEFT',42,-12)
-  title:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-42,-12)
+  title:SetPoint('TOPLEFT',ui,'TOPLEFT',chrome and 82 or 42,chrome and -1 or -12)
+  title:SetPoint('TOPRIGHT',ui,'TOPRIGHT',chrome and -82 or -42,chrome and -1 or -12)
+  -- Stay inside the native 20-unit title band; only adjust the text box.
+  title:SetHeight(chrome and 20 or 27)
   title:SetJustifyH('CENTER')
   resizeFont(title,18)
   title:SetText('|cffffd27aDer salzige Spucknapf|r')
-  local close=CreateFrame('Button',nil,ui,'UIPanelCloseButton');close:SetPoint('TOPRIGHT',-3,-3)
+  ui.windowTitle=title
+  local close=chrome and chrome.CloseButton or CreateFrame('Button',nil,ui,'UIPanelCloseButton')
+  if not chrome then
+    close:SetPoint('TOPRIGHT',-3,-3)
+    close:SetScript('OnClick',function() ui:Hide() end)
+  end
+  ui.windowCloseButton=close
   -- Compact action bar. Use the same core functions as the slash commands.
   ui.actionButtons={}
   local function actionButton(label,x,width,callback)
@@ -1516,23 +1782,27 @@ local function createUI()
     local x=starts[c];local w=widths[c]
     local panel=CreateFrame('Frame',nil,ui,'BackdropTemplate');panel:SetPoint('TOPLEFT',x,-131);panel:SetSize(w,380);style(panel)
     decoratePanel(panel,true)
+    addPanelTexture(panel)
     ui.pages[c]=panel
     local heading=makeText(panel,9,-7,w-18,21,true);heading:SetText(({'BERUFE','HANDWERKER','REZEPTBUCH'})[c]);ui.headers[c]=heading
     ui.columns[c]={}
-    for i=1,ROWS do
-      local row=CreateFrame('Button',nil,panel,'BackdropTemplate');row:SetSize(w-16,25);row:SetPoint('TOPLEFT',8,-34-(i-1)*26);style(row,false)
+    for i=1,(c==1 and 7 or ROWS) do
+      local row=CreateFrame('Button',nil,panel,'BackdropTemplate');row:SetSize(w-16,c==1 and 40 or 25);row:SetPoint('TOPLEFT',8,-34-(i-1)*(c==1 and 44 or 26));style(row,false)
+      decorateChoiceRow(row,c)
+      addRowHover(row)
       local label=makeText(row,7,-2,w-28,20);resizeFont(label,14);row.label=label
       if c==1 then
+        label:SetHeight(36);label:SetWordWrap(false)
         local professionIcon=row:CreateTexture(nil,'OVERLAY')
-        professionIcon:SetPoint('LEFT',row,'LEFT',5,0)
-        professionIcon:SetSize(20,20)
+        professionIcon:SetPoint('LEFT',row,'LEFT',7,0)
+        professionIcon:SetSize(32,32)
         professionIcon:Hide()
         row.professionIcon=professionIcon
       end
       if c==3 then
         local marker=row:CreateFontString(nil,'OVERLAY','GameFontHighlight')
         marker:SetPoint('LEFT',row,'LEFT',5,0);marker:SetWidth(12)
-        marker:SetText('|cff8debc9>|r');marker:Hide();row.selectionMarker=marker
+        marker:SetText('|cffffd27a>|r');marker:Hide();row.selectionMarker=marker
       end
       if c==3 then
         local rank=row:CreateFontString(nil,'OVERLAY','GameFontHighlight')
@@ -1586,27 +1856,16 @@ local function createUI()
   ui.materialScrollHint=makeText(detailPanel,12,-87,300,15)
   resizeFont(ui.materialScrollHint,11)
   ui.materialScrollHint:SetText('')
-  -- Use the exact Blizzard icons from the profession list as faint watermarks.
-  -- ARTWORK on the parent sits behind child buttons; their backdrops remain readable.
-  ui.professionWatermarks={}
-  ui.professionWatermarkByColumn={}
-  for _,column in ipairs({2,3}) do
-    local watermark=ui.pages[column]:CreateTexture(nil,'ARTWORK')
-    watermark:SetPoint('CENTER',ui.pages[column],'CENTER',0,-10)
-    watermark:SetSize(255,255)
-    watermark:SetAlpha(column==2 and 0.10 or 0.07)
-    ui.professionWatermarkByColumn[column]=watermark
-    ui.professionWatermarks[#ui.professionWatermarks+1]=watermark
-  end
+  -- All three columns use the same leather; no large profession images are created.
   -- Persistent bottom status bar, visible even while idle.
   ui.progressBack=CreateFrame('StatusBar',nil,ui)
   ui.progressBack:SetPoint('BOTTOMLEFT',18,8);ui.progressBack:SetSize(934,7)
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.8.6'
-  ui.versionLabel=ui:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
-  ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-17)
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.7'
+  ui.versionLabel=ui.windowTitleHost:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
+  ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,ui.windowChrome and -6 or -17)
   ui.versionLabel:SetJustifyH('RIGHT')
   ui.versionLabel:SetText('|cff938c81v'..tostring(version):gsub('^v','')..'|r')
   -- Visible resize control; normalize the initial CENTER anchor before sizing.
@@ -1685,19 +1944,15 @@ local function createUI()
     local materialHeight=112
     local columnHeight=math.max(200,height-131-materialHeight-26)
     visibleRows=math.max(1,math.min(ROWS,math.floor((columnHeight-39)/26)))
+    visibleProfessionRows=math.max(1,math.min(7,math.floor((columnHeight-30)/44)))
     for c=1,3 do
       local panel=ui.pages[c]
       panel:ClearAllPoints();panel:SetPoint('TOPLEFT',ui,'TOPLEFT',xs[c],-131)
       panel:SetSize(ws[c],columnHeight)
-      local watermark=ui.professionWatermarkByColumn[c]
-      if watermark then
-        local size=math.max(1,math.min(ws[c]-24,columnHeight-64,320))
-        watermark:SetSize(size,size)
-      end
       ui.headers[c]:SetWidth(ws[c]-18)
       for i,row in ipairs(ui.columns[c]) do
         row:SetWidth(ws[c]-16)
-        row.label:SetWidth(ws[c]-(c==1 and 48 or 34))
+        row.label:SetWidth(ws[c]-(c==1 and 72 or 34))
       end
     end
     ui.detailPanel:ClearAllPoints()
@@ -1762,10 +2017,27 @@ local function matches(str)
   return searchText=='' or tostring(str or ''):lower():find(searchText:lower(),1,true)~=nil
 end
 local function setButtons(column,items,callback,selected)
-  local maxOffset=math.max(0,#items-visibleRows)
+  local function paintChoiceRow(row)
+    if row.SetBackdropColor then
+      if row.isAllRecipes then row:SetBackdropColor(0.20,0.15,0.075,0.92)
+      elseif row.isSelected then
+        if column==1 then row:SetBackdropColor(0.12,0.095,0.055,0.98)
+        else row:SetBackdropColor(0.17,0.13,0.065,0.94) end
+      elseif column==3 and row.isRecipe then row:SetBackdropColor(0.09,0.07,0.05,0.45)
+      else row:SetBackdropColor(0.10,0.085,0.065,column==1 and 0.88 or 0.35) end
+    end
+    if row.SetBackdropBorderColor then
+      if row.isAllRecipes then row:SetBackdropBorderColor(0.48,0.36,0.16,1)
+      elseif row.isSelected then row:SetBackdropBorderColor(0.85,0.64,0.23,1)
+      else row:SetBackdropBorderColor(0.25,0.22,0.17,1) end
+    end
+    for _,t in ipairs(row.selectionArt or {}) do if row.isSelected then t:Show() else t:Hide() end end
+  end
+  local count=column==1 and visibleProfessionRows or visibleRows
+  local maxOffset=math.max(0,#items-count)
   offsets[column]=math.min(offsets[column] or 0,maxOffset)
   for i,row in ipairs(ui.columns[column]) do
-    local entry=(i<=visibleRows) and items[i+offsets[column]] or nil
+    local entry=(i<=count) and items[i+offsets[column]] or nil
     if entry then
       if row.rank then
         local v=entry.recipe and (tonumber(entry.recipe.trivialLevel) or tonumber(entry.recipe.skill))
@@ -1774,32 +2046,30 @@ local function setButtons(column,items,callback,selected)
       local isSelected=(not entry.category and not entry.allRecipes and entry.key==selected)
       row.isAllRecipes=entry.allRecipes
       row.isSelected=isSelected
+      row.isRecipe=entry.recipe~=nil
+      if row.hoverTexture then
+        row.hoverTexture:SetAlpha(isSelected and 0.06 or (entry.allRecipes and 0.10 or 0.14))
+        if type(row.IsMouseOver)=='function' and row:IsMouseOver() then row.hoverTexture:Show() else row.hoverTexture:Hide() end
+      end
       if row.selectionMarker then
         if isSelected then row.selectionMarker:Show() else row.selectionMarker:Hide() end
       end
-      if row.SetBackdropColor then
-        if entry.allRecipes then row:SetBackdropColor(0.20,0.15,0.075,0.92)
-        elseif isSelected then row:SetBackdropColor(0.12,0.29,0.24,0.92)
-        else row:SetBackdropColor(0.10,0.085,0.065,0.88) end
-      end
-      if row.SetBackdropBorderColor then
-        if entry.allRecipes then row:SetBackdropBorderColor(0.48,0.36,0.16,1)
-        elseif isSelected then row:SetBackdropBorderColor(0.38,0.78,0.63,1)
-        else row:SetBackdropBorderColor(0.25,0.22,0.17,1) end
-      end
+      paintChoiceRow(row)
       row.label:ClearAllPoints()
       if row.professionIcon then
         local icon=ui.professionIcons and ui.professionIcons[entry.name]
         if icon then row.professionIcon:SetTexture(icon);row.professionIcon:Show()
         else row.professionIcon:Hide() end
       end
-      row.label:SetPoint('TOPLEFT',row,'TOPLEFT',row.professionIcon and 32 or (entry.indent or (isSelected and 20 or 7)),-2)
-      row.label:SetText(((entry.category or entry.allRecipes) and '|cffffd27a' or isSelected and '|cffb8ffe4' or '|cffe8ddc6')..entry.label..'|r')
+      if row.professionIcon then row.label:SetPoint('LEFT',row,'LEFT',48,0)
+      else row.label:SetPoint('TOPLEFT',row,'TOPLEFT',entry.indent or (isSelected and 20 or 7),-2) end
+      row.label:SetText(((entry.category or entry.allRecipes) and '|cffffd27a' or isSelected and '|cffffdf83' or '|cffe8ddc6')..entry.label..'|r')
       row:Show();row:SetScript('OnClick',function() callback(entry) end)
       row.recipeID=entry.recipe and entry.recipe.id or nil
       row.craftedItemID=entry.recipe and entry.recipe.craftedItemID or nil
       row:SetScript('OnEnter',function(self)
-        if self.SetBackdropColor and not self.isSelected then self:SetBackdropColor(0.22,0.17,0.10,1) end
+        if self.hoverTexture then self.hoverTexture:Show()
+        elseif self.SetBackdropColor and not self.isSelected then self:SetBackdropColor(0.22,0.17,0.10,1) end
         -- Show the crafted ITEM tooltip, never the recipe/spell tooltip.
         -- Do not show a recipe tooltip for enchants or unknown outputs.
         local itemID=tonumber(self.craftedItemID)
@@ -1820,14 +2090,11 @@ local function setButtons(column,items,callback,selected)
         end
       end)
       row:SetScript('OnLeave',function(self)
-        if self.SetBackdropColor then
-          if self.isAllRecipes then self:SetBackdropColor(0.20,0.15,0.075,0.92)
-          elseif self.isSelected then self:SetBackdropColor(0.12,0.29,0.24,0.92)
-          else self:SetBackdropColor(0.10,0.085,0.065,0.88) end
-        end
+        if self.hoverTexture then self.hoverTexture:Hide() end
+        paintChoiceRow(self)
         if GameTooltip then GameTooltip:Hide() end
       end)
-    else row:Hide();if row.professionIcon then row.professionIcon:Hide() end;row.isSelected=false;row.isAllRecipes=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
+    else row:Hide();for _,t in ipairs(row.selectionArt or {}) do t:Hide() end;if row.hoverTexture then row.hoverTexture:Hide() end;if row.professionIcon then row.professionIcon:Hide() end;row.isSelected=false;row.isRecipe=false;row.isAllRecipes=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end
   end
 end
 renderUI=function()
@@ -1836,7 +2103,7 @@ renderUI=function()
   local professionMap={}
   for char,data in pairs(db.characters or {}) do
     for _,p in ipairs(data.professions or {}) do
-      if not excluded[p.name] then
+      if not excluded[p.name] and supportedCraftNames[p.name] then
         professionMap[p.name]=professionMap[p.name] or {}
         professionMap[p.name][#professionMap[p.name]+1]={char=char,prof=p}
       end
@@ -1868,15 +2135,6 @@ renderUI=function()
   end
   ui.professionIcons=professionIcons
   if not professionMap[chosenProfession] then chosenProfession=names[1];chosenCharacter=nil;chosenRecipe=nil;resetRecipeExpansion() end
-  if ui.professionWatermarks then
-    local professionIcon=professionIcons[chosenProfession]
-    for _,watermark in ipairs(ui.professionWatermarks) do
-      if professionIcon then
-        watermark:SetTexture(professionIcon)
-        watermark:Show()
-      else watermark:Hide() end
-    end
-  end
   local pitems={}
   for _,name in ipairs(names) do
     local include=matches(name)
@@ -2080,6 +2338,12 @@ local function createMinimapButton()
   if Minimap.HookScript then Minimap:HookScript('OnSizeChanged',positionMinimapButton) end
 end
 
+scanWorkPending=function() return automaticScan~=nil end
+updatePendingSkills=function(force)
+  if not db or not pendingSkillCapture or (not force and clock()<pendingSkillCapture) then return end
+  pendingSkillCapture=nil;lastScan=clock();capture(false);ensureLocalVersion()
+end
+
 createUI()
 frame:RegisterEvent('ADDON_LOADED')
 frame:RegisterEvent('PLAYER_LOGIN')
@@ -2106,10 +2370,10 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     registerPrefix()
     positionMinimapButton()
-    say('Testversion 0.8.6 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.9.7 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
-    capture(false); enqueue('HELLO|CACHE1')
+    capture(false);ensureLocalVersion(); enqueue('HELLO|CACHE1')
   elseif event=='CHAT_MSG_ADDON' then
     local rawPrefix,_,rawChannel=...
     transportStatus.raw=transportStatus.raw+1
@@ -2119,9 +2383,10 @@ frame:SetScript('OnEvent',function(_,event,...)
   elseif event=='GET_ITEM_INFO_RECEIVED' then itemRefreshElapsed=1
   elseif event=='TRADE_SKILL_SHOW' then scheduleAutomaticScan(true)
   elseif event=='TRADE_SKILL_LIST_UPDATE' then scheduleAutomaticScan(false)
-  elseif event=='TRADE_SKILL_CLOSE' then closeAutomaticScan()
+  elseif event=='TRADE_SKILL_CLOSE' then closeAutomaticScan();pendingSkillCapture=nil;lastScan=clock();capture(false);ensureLocalVersion();updateReplicas()
   elseif event=='SKILL_LINES_CHANGED' then
-    if clock()-lastScan>5 then lastScan=clock(); capture(false) end
+    if clock()-lastScan>5 then pendingSkillCapture=nil;lastScan=clock();capture(false);ensureLocalVersion()
+    else pendingSkillCapture=pendingSkillCapture or (lastScan+5) end
   end
 end)
 frame:SetScript('OnUpdate',function(_,dt)
@@ -2148,8 +2413,9 @@ frame:SetScript('OnUpdate',function(_,dt)
     end
     unresolvedMaterials=stillMissing
   end
-  updateReplicas()
+  updatePendingSkills()
   updateAutomaticScan()
+  updateReplicas()
   updateGuildReply()
   elapsed=elapsed+dt
   if elapsed<SEND_INTERVAL then return end
@@ -2180,7 +2446,10 @@ frame:SetScript('OnUpdate',function(_,dt)
         reportTransport()
     say('Sync-Diagnose: '..(syncStats.received-(outgoing.receivedAtStart or 0))..' eingehende Nachrichten, '..(syncStats.ok-(outgoing.okAtStart or 0))..' OK, '..(syncStats.miss-(outgoing.missAtStart or 0))..' Reparaturanfragen. Zuletzt: '..syncStats.lastKind..' von '..syncStats.lastSender)
         observeScanSync('unconfirmed',outgoing)
+        local nextTransfer=outgoing.next
+        restoreAutomaticVersion(outgoing)
         syncState='Keine Empfangsbestaetigung';outgoing=nil
+        if nextTransfer then startTransfer(nextTransfer) end
       end
     end
   end

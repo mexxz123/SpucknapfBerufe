@@ -1863,7 +1863,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.7'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.8'
   ui.versionLabel=ui.windowTitleHost:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,ui.windowChrome and -6 or -17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -2280,12 +2280,10 @@ local function createMinimapButton()
   minimapButton:RegisterForClicks('LeftButtonUp','RightButtonUp')
   minimapButton:RegisterForDrag('LeftButton')
   local icon=minimapButton:CreateTexture(nil,'ARTWORK')
-  icon:SetSize(20,20);icon:SetPoint('CENTER',0,0)
-  icon:SetTexture('Interface\\Icons\\Trade_LeatherWorking')
+  icon:SetSize(24,24);icon:SetPoint('CENTER',0,0)
+  icon:SetTexture('Interface\\AddOns\\SpucknapfBerufe\\Textures\\MinimapSP')
+  icon:SetTexCoord(0,1,0,1)
   minimapButton.icon=icon
-  local border=minimapButton:CreateTexture(nil,'OVERLAY')
-  border:SetSize(32,32);border:SetPoint('CENTER',0,0)
-  border:SetTexture('Interface\\AddOns\\SpucknapfBerufe\\Textures\\MinimapRing')
   minimapButton:SetHighlightTexture('Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight')
   minimapButton:SetScript('OnClick',function(self,button)
     if self.dragMoved then self.dragMoved=nil;return end
@@ -2370,7 +2368,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     registerPrefix()
     positionMinimapButton()
-    say('Testversion 0.9.7 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.9.8 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false);ensureLocalVersion(); enqueue('HELLO|CACHE1')

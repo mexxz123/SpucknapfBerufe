@@ -2016,6 +2016,95 @@ end
 local function matches(str)
   return searchText=='' or tostring(str or ''):lower():find(searchText:lower(),1,true)~=nil
 end
+-- Recipe tooltips: no persisted fields and no dependency on an open profession window.
+local recipeTooltipOwner
+local function hideRecipeTooltip(row)
+  if recipeTooltipOwner==row then
+    if GameTooltip then GameTooltip:Hide() end
+    recipeTooltipOwner=nil
+  end
+end
+local function recipeSpellID(recipe)
+  local id=tonumber(recipe and recipe.id)
+  if not id or id<=0 or id%1~=0 then return nil end
+  if C_TradeSkillUI and type(C_TradeSkillUI.GetRecipeLink)=='function' then
+    local ok,link=pcall(C_TradeSkillUI.GetRecipeLink,id)
+    if ok and type(link)=='string' then
+      local spell=tonumber(link:match('enchant:(%d+)') or link:match('spell:(%d+)'))
+      if spell and spell>0 then return spell end
+    end
+  end
+  -- A recipe ID is not blindly assumed to be a spell ID: validate its name.
+  local name
+  if C_Spell and type(C_Spell.GetSpellInfo)=='function' then
+    local ok,info=pcall(C_Spell.GetSpellInfo,id)
+    if ok and type(info)=='table' then name=info.name end
+  end
+  if not name and type(GetSpellInfo)=='function' then
+    local ok,value=pcall(GetSpellInfo,id)
+    if ok then name=value end
+  end
+  local function normalized(value)
+    return type(value)=='string' and value:lower():gsub('[%s%p]','') or nil
+  end
+  local expected=normalized(recipe.name)
+  if expected and expected~='' and normalized(name)==expected then return id end
+end
+local function showRecipeFallback(row,recipe,spellID)
+  local tooltip=GameTooltip
+  tooltip:Hide();tooltip:ClearLines();tooltip:SetOwner(row,'ANCHOR_RIGHT')
+  tooltip:SetText(recipe.name or 'Rezept',1,0.82,0.42)
+  local description
+  local getter=C_Spell and C_Spell.GetSpellDescription or GetSpellDescription
+  if spellID and type(getter)=='function' then
+    local ok,value=pcall(getter,spellID)
+    if ok and type(value)=='string' and value~='' then description=value end
+  end
+  if description then tooltip:AddLine(description,1,1,1,true) end
+  if type(recipe.category)=='string' and recipe.category~='' then
+    tooltip:AddLine(recipe.category,0.7,0.65,0.55,true)
+  end
+  if type(recipe.materials)=='table' and #recipe.materials>0 then
+    tooltip:AddLine('Materialien:',1,0.82,0.42)
+    for _,material in ipairs(recipe.materials) do
+      local id,qty=tonumber(material.id),tonumber(material.qty)
+      if id and id>0 and qty and qty>0 then
+        local name=materialInfo(id)
+        tooltip:AddLine(tostring(qty)..'x '..(name or ('Item #'..id)),0.9,0.85,0.75,true)
+      end
+    end
+  end
+  tooltip:Show()
+end
+local function showNonItemRecipeTooltip(row,recipe)
+  if not GameTooltip or not recipe then return end
+  local spellID=recipeSpellID(recipe)
+  if spellID then
+    local methods={}
+    if type(GameTooltip.SetSpellByID)=='function' then
+      methods[#methods+1]=function() return GameTooltip:SetSpellByID(spellID) end
+    end
+    if type(GameTooltip.SetHyperlink)=='function' then
+      methods[#methods+1]=function() return GameTooltip:SetHyperlink('spell:'..spellID) end
+    end
+    for _,showSpell in ipairs(methods) do
+      GameTooltip:Hide();GameTooltip:ClearLines();GameTooltip:SetOwner(row,'ANCHOR_RIGHT')
+      local ok=pcall(showSpell)
+      local valid=false
+      if ok and type(GameTooltip.GetSpell)=='function' then
+        local good,_,second,third=pcall(GameTooltip.GetSpell,GameTooltip)
+        valid=good and (tonumber(third) or tonumber(second))==spellID
+      end
+      if ok and not valid and type(GameTooltip.NumLines)=='function' and type(GameTooltip.GetSpell)~='function' then
+        local good,lines=pcall(GameTooltip.NumLines,GameTooltip)
+        valid=good and type(lines)=='number' and lines>0
+      end
+      if ok and valid then GameTooltip:Show();return end
+    end
+  end
+  showRecipeFallback(row,recipe,spellID)
+end
+
 local function setButtons(column,items,callback,selected)
   local function paintChoiceRow(row)
     if row.SetBackdropColor then
@@ -2037,6 +2126,8 @@ local function setButtons(column,items,callback,selected)
   local maxOffset=math.max(0,#items-count)
   offsets[column]=math.min(offsets[column] or 0,maxOffset)
   for i,row in ipairs(ui.columns[column]) do
+    hideRecipeTooltip(row) -- Recycled/scrolled rows must not retain another recipe tooltip.
+    row:SetScript('OnHide',function(self) hideRecipeTooltip(self) end)
     local entry=(i<=count) and items[i+offsets[column]] or nil
     if entry then
       if row.rank then
@@ -2070,8 +2161,9 @@ local function setButtons(column,items,callback,selected)
       row:SetScript('OnEnter',function(self)
         if self.hoverTexture then self.hoverTexture:Show()
         elseif self.SetBackdropColor and not self.isSelected then self:SetBackdropColor(0.22,0.17,0.10,1) end
-        -- Show the crafted ITEM tooltip, never the recipe/spell tooltip.
-        -- Do not show a recipe tooltip for enchants or unknown outputs.
+        if GameTooltip then GameTooltip:Hide();GameTooltip:ClearLines() end
+        recipeTooltipOwner=nil
+        -- Keep the existing crafted-item path; only missing outputs use recipe/spell data.
         local itemID=tonumber(self.craftedItemID)
         if not itemID and self.recipeID and C_TradeSkillUI and type(C_TradeSkillUI.GetRecipeSchematic)=='function' then
           local ok,schematic=pcall(C_TradeSkillUI.GetRecipeSchematic,self.recipeID,false)
@@ -2087,11 +2179,16 @@ local function setButtons(column,items,callback,selected)
           GameTooltip:SetOwner(self,'ANCHOR_RIGHT')
           GameTooltip:SetHyperlink('item:'..itemID)
           GameTooltip:Show()
+          recipeTooltipOwner=self
+        elseif entry.recipe and GameTooltip then
+          recipeTooltipOwner=self
+          showNonItemRecipeTooltip(self,entry.recipe)
         end
       end)
       row:SetScript('OnLeave',function(self)
         if self.hoverTexture then self.hoverTexture:Hide() end
         paintChoiceRow(self)
+        hideRecipeTooltip(self)
         if GameTooltip then GameTooltip:Hide() end
       end)
     else row:Hide();for _,t in ipairs(row.selectionArt or {}) do t:Hide() end;if row.hoverTexture then row.hoverTexture:Hide() end;if row.professionIcon then row.professionIcon:Hide() end;row.isSelected=false;row.isRecipe=false;row.isAllRecipes=false;if row.selectionMarker then row.selectionMarker:Hide() end;row.recipeID=nil;if row.rank then row.rank:SetText('') end;row:SetScript('OnClick',nil) end

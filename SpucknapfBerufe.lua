@@ -20,6 +20,7 @@ local SEND_INTERVAL=0.06 -- paced sending; ACK and repair timeouts remain unchan
 local ACK_WAIT=40 -- allow packet repair and receiver processing
 local lastRecipeSignature=nil
 local activeProfession=nil
+local admin
 local ui, renderUI
 local selectedScanProfession=nil
 local itemRefreshElapsed=0
@@ -866,6 +867,7 @@ local function requestGuildData()
   enqueueControl(message)
   if not controlQueued[message] then say('Sendewarteschlange belegt. Bitte gleich erneut versuchen.');return end
   lastGuildRequest=now
+  admin.Request()
   syncState='Gildendaten angefordert'
   say('Gildendaten angefordert. Online-Handwerker mit aktueller Addon-Version antworten automatisch; bitte etwas warten.')
 end
@@ -991,7 +993,7 @@ local function show()
   local count=0
   for char,data in pairs(db.characters) do
     for _,p in ipairs(data.professions or {}) do
-      if not excluded[p.name] then say(p.name..' - '..char..': '..p.skill..'/'..p.max..' | Rezepte: '..#(p.recipes or {})..(p.complete and '' or ' (nicht erfasst)'))
+      if not excluded[p.name] and admin.Visible(char,p.name) then say(p.name..' - '..char..': '..p.skill..'/'..p.max..' | Rezepte: '..#(p.recipes or {})..(p.complete and '' or ' (nicht erfasst)'))
       count=count+1 end
     end
   end
@@ -1082,7 +1084,7 @@ local function recipeList(search)
   local n=0
   for char,data in pairs(db.characters) do
     for _,p in ipairs(data.professions or {}) do
-      if not excluded[p.name] then for _,r in ipairs(p.recipes or {}) do
+      if not excluded[p.name] and admin.Visible(char,p.name) then for _,r in ipairs(p.recipes or {}) do
         if search=='' or r.name:lower():find(search,1,true) then
           say(p.name..' | '..char..' | '..r.name..' (#'..r.id..')'); n=n+1
           if n>=30 then say('Ausgabe auf 30 Treffer begrenzt.'); return end
@@ -1209,9 +1211,13 @@ local function receiveCachedBook(relay,seq,parts,replay,prefix,channel)
   local applied=replicaMetadata()[owner]
   if applied and applied.revision==revision and applied.digest==digest then complete() end
 end
+admin=SpucknapfBerufeAdmin.New({clock=clock,stamp=stamp,encode=encode,decode=decode,
+  guild=currentGuildKey,identity=function() return playerKey(),who() end,
+  send=enqueueControl,changed=function() if renderUI then renderUI() end end})
 local function onMessage(prefix,payload,channel,sender)
   if prefix~=PREFIX or not db or type(payload)~='string' or not sender then return end
   if channel~='GUILD' then return end
+  if payload:sub(1,4)=='AV2|' then admin.Receive(payload,sender,channel);return end
   local name=sender:match('^[^-]+') or sender
   if name==who() then return end
   local a=split(payload); local kind=a[1]
@@ -1863,7 +1869,7 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.8'
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.9'
   ui.versionLabel=ui.windowTitleHost:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
   ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,ui.windowChrome and -6 or -17)
   ui.versionLabel:SetJustifyH('RIGHT')
@@ -1976,6 +1982,9 @@ local function createUI()
     ui.materialScrollHint:SetWidth(inner-45)
     if renderUI and db then renderUI() end
   end
+  ui.normalContent={search,sl,sortButton,ui.status,ui.skillNote,ui.detailPanel,ui.progressBack}
+  for _,b in ipairs(ui.actionButtons) do ui.normalContent[#ui.normalContent+1]=b end
+  for _,panel in ipairs(ui.pages) do ui.normalContent[#ui.normalContent+1]=panel end
   ui.layout=layout
   ui:SetScript('OnSizeChanged',function()
     layout()
@@ -2200,7 +2209,7 @@ renderUI=function()
   local professionMap={}
   for char,data in pairs(db.characters or {}) do
     for _,p in ipairs(data.professions or {}) do
-      if not excluded[p.name] and supportedCraftNames[p.name] then
+      if not excluded[p.name] and supportedCraftNames[p.name] and admin.Visible(char,p.name) then
         professionMap[p.name]=professionMap[p.name] or {}
         professionMap[p.name][#professionMap[p.name]+1]={char=char,prof=p}
       end
@@ -2440,6 +2449,8 @@ updatePendingSkills=function(force)
 end
 
 createUI()
+admin.Attach(ui,{content=ui.normalContent,text=makeText,font=resizeFont,
+  panel=function(panel) style(panel);decoratePanel(panel,true);addPanelTexture(panel) end})
 frame:RegisterEvent('ADDON_LOADED')
 frame:RegisterEvent('PLAYER_LOGIN')
 frame:RegisterEvent('CHAT_MSG_ADDON')
@@ -2455,6 +2466,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     SpucknapfBerufeDB=SpucknapfBerufeDB or {}
     db=SpucknapfBerufeDB
     db.characters=db.characters or {}; db.peers=db.peers or {}; db.playerNames=db.playerNames or {}
+    admin.Init(db)
     if ui and ui.layout then
       if db.windowWidth and db.windowHeight then ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655))) end
       ui.layout()
@@ -2465,7 +2477,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     registerPrefix()
     positionMinimapButton()
-    say('Testversion 0.9.8 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.9.9 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false);ensureLocalVersion(); enqueue('HELLO|CACHE1')
@@ -2474,7 +2486,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     transportStatus.raw=transportStatus.raw+1
     transportStatus.lastPrefix=tostring(rawPrefix);transportStatus.lastChannel=tostring(rawChannel)
     onMessage(...)
-  elseif event=='GUILD_ROSTER_UPDATE' then migrateLocalAlias(who())
+  elseif event=='GUILD_ROSTER_UPDATE' then migrateLocalAlias(who());admin.RefreshAuthority();admin.RefreshUI();if renderUI then renderUI() end
   elseif event=='GET_ITEM_INFO_RECEIVED' then itemRefreshElapsed=1
   elseif event=='TRADE_SKILL_SHOW' then scheduleAutomaticScan(true)
   elseif event=='TRADE_SKILL_LIST_UPDATE' then scheduleAutomaticScan(false)
@@ -2508,6 +2520,7 @@ frame:SetScript('OnUpdate',function(_,dt)
     end
     unresolvedMaterials=stillMissing
   end
+  admin.Tick()
   updatePendingSkills()
   updateAutomaticScan()
   updateReplicas()
@@ -2726,6 +2739,7 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
   elseif cmd=='categories' or cmd=='kategorien' then categoryProbe(arg)
   elseif cmd=='anfordern' or cmd=='request' then requestGuildData()
   elseif cmd=='sync' then sendSnapshot(); say('Datenuebertragung geplant ('..(outgoing and #outgoing.messages or 0)..' Pakete). Bitte bis zur Empfangsbestaetigung warten.')
+  elseif cmd=='adminstatus' then say(admin.Describe())
   elseif cmd=='scanstatus' then reportScanStatus()
   elseif cmd=='syncstatus' then
     reportTransport()

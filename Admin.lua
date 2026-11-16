@@ -226,7 +226,7 @@ function SpucknapfBerufeAdmin.New(env)
     if button then return end
     host,appearance=parent,presentation
     button=CreateFrame('Button',nil,parent,'UIPanelButtonTemplate')
-    button:SetSize(100,22);button:SetPoint('TOPRIGHT',parent,'TOPRIGHT',-20,-34);button:SetText('Verwaltung');button:Hide()
+    button:SetSize(140,32);button:SetPoint('TOPRIGHT',parent,'TOPRIGHT',-18,-82);button:SetText('Verwaltung');button:Hide()
     button:SetScript('OnClick',function()
       A.RefreshAuthority();if not localLeader then return end
       if not window then A.CreatePage() end
@@ -241,7 +241,7 @@ function SpucknapfBerufeAdmin.New(env)
   function A.CreatePage()
     A.RefreshAuthority();if not localLeader or not host then return end
     window=CreateFrame('Frame',nil,host,'BackdropTemplate')
-    window:SetPoint('TOPLEFT',host,'TOPLEFT',18,-61)
+    window:SetPoint('TOPLEFT',host,'TOPLEFT',18,-82)
     window:SetPoint('BOTTOMRIGHT',host,'BOTTOMRIGHT',-18,18)
     appearance.panel(window)
     local title=appearance.text(window,9,-7,300,21,true);title:SetText('Gildenweite Sichtbarkeit')
@@ -249,7 +249,7 @@ function SpucknapfBerufeAdmin.New(env)
     hint:SetText('Häkchen = sichtbar. Charakter-Haken übersteuert die Berufe. Ausklappen: + / −.')
     hint:SetWordWrap(true);window.hint=hint
     window.back=CreateFrame('Button',nil,host,'UIPanelButtonTemplate')
-    window.back:SetSize(150,22);window.back:SetPoint('TOPRIGHT',host,'TOPRIGHT',-20,-34);window.back:SetText('Zurück zu Berufe');window.back:Hide()
+    window.back:SetSize(150,32);window.back:SetPoint('TOPRIGHT',host,'TOPRIGHT',-18,-82);window.back:SetText('Zurück zu Berufe');window.back:Hide()
     window.back:SetScript('OnClick',returnToProfessions)
     window.rows={}
     for i=1,40 do

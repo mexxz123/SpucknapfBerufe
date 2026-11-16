@@ -1600,7 +1600,10 @@ local function createWindowChrome(parent)
       if not masked or value==false then error('Kreismaske nicht verfuegbar') end
     end
     if portrait.SetVertexColor then portrait:SetVertexColor(1,1,1,1) end
-    title:Hide()
+    -- Classic/Forever templates can provide BOTH title slots.
+    for _,nativeTitle in pairs({chrome.TitleText,chrome.TitleContainer and chrome.TitleContainer.TitleText}) do
+      if nativeTitle then nativeTitle:SetText('');nativeTitle:Hide() end
+    end
     -- Preserve our warm dark background, rather than inheriting the template's rock fill.
     if chrome.Bg then chrome.Bg:Hide() end
     if chrome.TopTileStreaks then chrome.TopTileStreaks:Hide() end
@@ -1624,14 +1627,14 @@ end
 local function createUI()
   if ui then return end
   ui=CreateFrame('Frame','SpucknapfBerufeWindow',UIParent,'BackdropTemplate')
-  ui:SetSize(970,655);ui:SetPoint('CENTER');ui:SetClampedToScreen(true)
+  ui:SetSize(970,693);ui:SetPoint('CENTER');ui:SetClampedToScreen(true)
   -- WoW client builds expose different resize-bound APIs. Never abort UI creation.
   if ui.SetResizable then ui:SetResizable(true) end
   if ui.SetResizeBounds then
-    ui:SetResizeBounds(740,490,1600,1100)
+    ui:SetResizeBounds(740,528,1600,1138)
   else
-    if ui.SetMinResize then ui:SetMinResize(740,490) end
-    if ui.SetMaxResize then ui:SetMaxResize(1600,1100) end
+    if ui.SetMinResize then ui:SetMinResize(740,528) end
+    if ui.SetMaxResize then ui:SetMaxResize(1600,1138) end
   end
   ui:SetFrameStrata('DIALOG');ui:SetFrameLevel(100);ui:SetToplevel(true)
   ui:SetMovable(true);ui:EnableMouse(true)
@@ -1642,29 +1645,83 @@ local function createUI()
   ui.windowChromeMode=chrome and 'PortraitFrameTemplate' or 'fallback'
   ui.windowChromeReason=chromeReason
   if not chrome then
-    local titleBand=ui:CreateTexture(nil,'BACKGROUND')
-    titleBand:SetTexture('Interface\\Buttons\\WHITE8X8')
-    titleBand:SetVertexColor(0.22,0.13,0.055,0.75)
-    titleBand:SetPoint('TOPLEFT',ui,'TOPLEFT',10,-10)
-    titleBand:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-10,-10);titleBand:SetHeight(31)
-    local titleRule=ui:CreateTexture(nil,'BORDER')
-    titleRule:SetTexture('Interface\\Buttons\\WHITE8X8')
-    titleRule:SetVertexColor(0.67,0.46,0.19,0.8)
-    titleRule:SetPoint('TOPLEFT',ui,'TOPLEFT',17,-42)
-    titleRule:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-17,-42);titleRule:SetHeight(1)
     drawGoldFrame(ui,true)
   end
+  local nativeHeader,headerReason
+  local headerAttempts,headerReported=0,false
+  ui.windowHeaderStatus='wartet auf initialisierte NineSlice-Regionen'
+  ui.windowHeaderFailure=function(reason)
+    ui.windowHeaderStatus='INAKTIV: '..tostring(reason)
+    say('Titelleiste NICHT aktiviert: '..ui.windowHeaderStatus)
+  end
+  ui.windowHeaderDescribe=function()
+    if nativeHeader and not nativeHeader.active then return 'INAKTIV: '..tostring(nativeHeader.error) end
+    return ui.windowHeaderStatus..'; Versuche='..headerAttempts
+  end
+  -- One native title object inside the reconstructed native-atlas header.
   local titleHost=(chrome and chrome.TitleContainer) or chrome or ui
   ui.windowTitleHost=titleHost
-  local title=makeText(titleHost,0,0,100,27,true)
+  local title=(chrome and chrome.TitleContainer and chrome.TitleContainer.TitleText) or (chrome and chrome.TitleText)
+  if not title then title=makeText(titleHost,0,0,100,20,true) end
+  -- Both native slots can coexist. Only the chosen FontString may be visible.
+  if chrome then
+    for _,other in pairs({chrome.TitleText,chrome.TitleContainer and chrome.TitleContainer.TitleText}) do
+      if other and other~=title then other:SetText('');other:Hide() end
+    end
+  end
   title:ClearAllPoints()
-  title:SetPoint('TOPLEFT',ui,'TOPLEFT',chrome and 82 or 42,chrome and -1 or -12)
-  title:SetPoint('TOPRIGHT',ui,'TOPRIGHT',chrome and -82 or -42,chrome and -1 or -12)
-  -- Stay inside the native 20-unit title band; only adjust the text box.
-  title:SetHeight(chrome and 20 or 27)
-  title:SetJustifyH('CENTER')
-  resizeFont(title,18)
-  title:SetText('|cffffd27aDer salzige Spucknapf|r')
+  title:SetPoint('TOPLEFT',ui,'TOPLEFT',110,chrome and -1 or -8)
+  title:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-110,chrome and -1 or -8)
+  title:SetHeight(nativeHeader and 64 or 20);title:SetJustifyH('CENTER');title:SetJustifyV('MIDDLE');title:SetWordWrap(false)
+  local titleFont=title:GetFont()
+  title:SetFont(titleFont,16,'')
+  title:SetShadowColor(0,0,0,0.8);title:SetShadowOffset(1,-1)
+  title:SetText('|cffffd27aDer salzige Spucknapf|r');title:Show()
+  local function layoutHeading(tryBuild)
+    if not nativeHeader and headerAttempts<6 and (tryBuild==true or not (C_Timer and type(C_Timer.After)=='function')) then
+      headerAttempts=headerAttempts+1
+      nativeHeader,headerReason=SpucknapfBerufeNativeHeader.Build(ui,chrome)
+      ui.windowNativeHeader=nativeHeader
+    end
+    local expanded=nativeHeader and nativeHeader.Layout()
+    ui.windowHeaderStatus=expanded and ('AKTIV: native Atlas-Konstruktion, sichtbare Zielhoehe 55 UI; Goldkante 9 UI angehoben; '..nativeHeader.identification) or ('INAKTIV: '..tostring((nativeHeader and nativeHeader.error) or headerReason))
+    if expanded and headerReported~='aktiv' then say('Titelleiste aktiviert: Blizzard-Atlas, sichtbare Zielhoehe 55 UI; Goldkante 9 UI angehoben. /spucknapf headerstatus');headerReported='aktiv' end
+    if not expanded and (headerAttempts>=6 or nativeHeader) and headerReported~=ui.windowHeaderStatus then say('Titelleiste NICHT aktiviert: '..ui.windowHeaderStatus);headerReported=ui.windowHeaderStatus end
+    local titleHeight=expanded and 64 or 20
+    if chrome and chrome.TitleContainer then
+      chrome.TitleContainer:SetHeight(titleHeight)
+      if chrome.TitleContainer.SetClipsChildren then chrome.TitleContainer:SetClipsChildren(false) end
+    end
+    title:SetHeight(titleHeight)
+    -- Center on visible brown area, not on the taller native title container.
+    local titleTop=expanded and (titleHeight/2-nativeHeader.titleCenter) or (chrome and -1 or -8)
+    title:ClearAllPoints()
+    title:SetPoint('TOPLEFT',ui,'TOPLEFT',110,titleTop)
+    title:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-110,titleTop)
+    if ui.versionLabel then
+      ui.versionLabel:ClearAllPoints();ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-48,expanded and -14 or -6)
+    end
+    if expanded and ui.windowCloseButton then
+      ui.windowCloseButton:ClearAllPoints();ui.windowCloseButton:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-10,-6)
+      ui.windowCloseButton:SetFrameStrata(ui:GetFrameStrata())
+      ui.windowCloseButton:SetFrameLevel(titleHost:GetFrameLevel()+1)
+    end
+    if chrome then
+      for _,other in pairs({chrome.TitleText,chrome.TitleContainer and chrome.TitleContainer.TitleText}) do
+        if other and other~=title then other:SetText('');other:Hide() end
+      end
+    end
+    title:Show()
+    local size=(nativeHeader and nativeHeader.active) and 30 or 16
+    title:SetFont(titleFont,size,'')
+    while size>12 and title:GetStringWidth()>ui:GetWidth()-330 do
+      size=size-1;title:SetFont(titleFont,size,'')
+    end
+  end
+  -- Bounded retries after native template layout; no permanent polling.
+  if C_Timer and type(C_Timer.After)=='function' then
+    for _,delay in ipairs({0,0.1,0.5,1,2,4}) do C_Timer.After(delay,function() layoutHeading(true) end) end
+  end
   ui.windowTitle=title
   local close=chrome and chrome.CloseButton or CreateFrame('Button',nil,ui,'UIPanelCloseButton')
   if not chrome then
@@ -1676,7 +1733,7 @@ local function createUI()
   ui.actionButtons={}
   local function actionButton(label,x,width,callback)
     local b=CreateFrame('Button',nil,ui,'UIPanelButtonTemplate')
-    b:SetSize(width,32);b:SetPoint('TOPLEFT',x,-61)
+    b:SetSize(width,32);b:SetPoint('TOPLEFT',x,-82)
     b:SetText(label)
     local font=b:GetFontString()
     if font then font:SetFontObject('GameFontNormal') end
@@ -1688,7 +1745,7 @@ local function createUI()
     return b
   end
   -- Controls are in the top bar; the search field is moved to the footer.
-  actionButton('Scannen',18,120,function()
+  ui.manualScan=function()
     if not selectedScanProfession or selectedScanProfession=='' then
       say('Bitte zuerst links einen Herstellungsberuf auswaehlen und dessen Berufsreiter im Spiel oeffnen.')
       return
@@ -1697,13 +1754,13 @@ local function createUI()
     local requested=opened and not excluded[opened] and opened or selectedScanProfession
     capture(true,requested)
     -- capture reports the actual scan result; do not report the old selection.
-  end)
-  actionButton('Synchronisieren',148,165,function()
+  end
+  ui.manualSync=function()
     sendSnapshot()
     say('Synchronisierung geplant. Fortschritt unten im Fenster.')
-  end)
+  end
 
-  ui.requestGuildButton=actionButton('Gildendaten anfordern',323,190,requestGuildData)
+  ui.requestGuildButton=actionButton('Gildendaten anfordern',18,190,requestGuildData)
   ui.requestGuildButton:SetScript('OnEnter',function(self)
     if GameTooltip then
       GameTooltip:SetOwner(self,'ANCHOR_TOP')
@@ -1713,16 +1770,16 @@ local function createUI()
     end
   end)
   ui.requestGuildButton:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
-  ui.status=makeText(ui,530,-65,420,20)
+  ui.status=makeText(ui,226,-88,420,20)
   ui.status:ClearAllPoints()
-  ui.status:SetPoint('TOPLEFT',ui,'TOPLEFT',530,-65)
-  ui.status:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-18,-65)
-  ui.status:SetHeight(20)
+  ui.status:SetPoint('TOPLEFT',ui,'TOPLEFT',226,-88)
+  ui.status:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-176,-88)
+  ui.status:SetHeight(18)
   ui.status:SetText('|cff9ab0a8Bereit|r')
 
-  local search=CreateFrame('EditBox',nil,ui,'InputBoxTemplate');search:SetSize(350,24);search:SetPoint('TOPLEFT',18,-96)
+  local search=CreateFrame('EditBox',nil,ui,'InputBoxTemplate');search:SetSize(702,24);search:SetPoint('TOPLEFT',18,-120)
   search:SetAutoFocus(false);search:SetMaxLetters(80);search:SetText('')
-  local sl=makeText(ui,386,-99,150,20);sl:SetText('|cffb9a788Suche|r')
+  local sl=makeText(search,8,-2,120,20);sl:SetText('|cffb9a788Suche|r')
   search:SetTextInsets(4,25,0,0)
   local clearSearch=CreateFrame('Button',nil,search,'UIPanelCloseButton')
   clearSearch:SetSize(20,20)
@@ -1742,11 +1799,12 @@ local function createUI()
   clearSearch:SetScript('OnLeave',function() if GameTooltip then GameTooltip:Hide() end end)
   search:SetScript('OnTextChanged',function(self)
     searchText=self:GetText() or ''
+    if searchText~='' then sl:Hide() else sl:Show() end
     if searchText~='' then clearSearch:Show() else clearSearch:Hide();if GameTooltip then GameTooltip:Hide() end end
     offsets={0,0,0};if renderUI then renderUI() end
   end)
   local sortButton=CreateFrame('Button',nil,ui,'UIPanelButtonTemplate')
-  sortButton:SetSize(220,32);sortButton:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-18,-94)
+  sortButton:SetSize(220,32);sortButton:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-18,-118)
   local sortLabel=sortButton:GetFontString()
   if sortLabel then
     sortLabel:SetFontObject('GameFontNormal')
@@ -1781,12 +1839,12 @@ local function createUI()
   end)
   refreshSortLabel()
   -- The sorting control is self-explanatory; avoid overlapping explanatory text.
-  ui.skillNote=makeText(ui,540,-99,230,20)
+  ui.skillNote=makeText(ui,226,-89,400,12)
   ui.columns={};ui.headers={};ui.pages={};ui.buttons={}
   local starts={18,263,508};local widths={233,233,444}
   for c=1,3 do
     local x=starts[c];local w=widths[c]
-    local panel=CreateFrame('Frame',nil,ui,'BackdropTemplate');panel:SetPoint('TOPLEFT',x,-131);panel:SetSize(w,380);style(panel)
+    local panel=CreateFrame('Frame',nil,ui,'BackdropTemplate');panel:SetPoint('TOPLEFT',x,-158);panel:SetSize(w,380);style(panel)
     decoratePanel(panel,true)
     addPanelTexture(panel)
     ui.pages[c]=panel
@@ -1869,9 +1927,9 @@ local function createUI()
   ui.progressBack:SetStatusBarTexture('Interface\\Buttons\\WHITE8X8')
   ui.progressBack:SetStatusBarColor(0.84,0.65,0.29,1)
   ui.progressBack:SetMinMaxValues(0,1);ui.progressBack:SetValue(0)
-  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.9'
-  ui.versionLabel=ui.windowTitleHost:CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
-  ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,ui.windowChrome and -6 or -17)
+  local version=(GetAddOnMetadata and GetAddOnMetadata('SpucknapfBerufe','Version')) or '0.9.10'
+  ui.versionLabel=((chrome and chrome.TitleContainer) or ui.windowTitleHost):CreateFontString(nil,'OVERLAY','GameFontHighlightSmall')
+  ui.versionLabel:SetPoint('TOPRIGHT',ui,'TOPRIGHT',-36,-6)
   ui.versionLabel:SetJustifyH('RIGHT')
   ui.versionLabel:SetText('|cff938c81v'..tostring(version):gsub('^v','')..'|r')
   -- Visible resize control; normalize the initial CENTER anchor before sizing.
@@ -1886,7 +1944,7 @@ local function createUI()
   gripTexture:SetVertexColor(1,0.82,0.42,1)
   grip:SetNormalTexture(gripTexture)
   local function saveWindowSize()
-    if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()+0.5) end
+    if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()-38+0.5) end
   end
   local function finishResize()
     if not grip.resizing then return end
@@ -1929,7 +1987,7 @@ local function createUI()
       end
       local cx,cy=GetCursorPosition()
       local width=math.max(740,math.min(1600,handle.startWidth+cx/scale-handle.startX))
-      local height=math.max(490,math.min(1100,handle.startHeight+handle.startY-cy/scale))
+      local height=math.max(528,math.min(1138,handle.startHeight+handle.startY-cy/scale))
       ui:SetSize(width,height)
     end)
   end)
@@ -1940,6 +1998,9 @@ local function createUI()
   ui.resizeGrip=grip
   local function layout()
     local width,height=ui:GetWidth(),ui:GetHeight()
+    layoutHeading()
+    search:SetWidth(math.max(100,width-268))
+    ui.skillNote:SetWidth(math.max(100,width-402))
     local inner=width-36
     local gap=12
     local left=math.floor((inner-2*gap)*0.255)
@@ -1948,12 +2009,12 @@ local function createUI()
     local xs={18,18+left+gap,18+left+gap+mid+gap}
     local ws={left,mid,right}
     local materialHeight=112
-    local columnHeight=math.max(200,height-131-materialHeight-26)
+    local columnHeight=math.max(200,height-158-materialHeight-26)
     visibleRows=math.max(1,math.min(ROWS,math.floor((columnHeight-39)/26)))
     visibleProfessionRows=math.max(1,math.min(7,math.floor((columnHeight-30)/44)))
     for c=1,3 do
       local panel=ui.pages[c]
-      panel:ClearAllPoints();panel:SetPoint('TOPLEFT',ui,'TOPLEFT',xs[c],-131)
+      panel:ClearAllPoints();panel:SetPoint('TOPLEFT',ui,'TOPLEFT',xs[c],-158)
       panel:SetSize(ws[c],columnHeight)
       ui.headers[c]:SetWidth(ws[c]-18)
       for i,row in ipairs(ui.columns[c]) do
@@ -1962,7 +2023,7 @@ local function createUI()
       end
     end
     ui.detailPanel:ClearAllPoints()
-    ui.detailPanel:SetPoint('TOPLEFT',ui,'TOPLEFT',18,-131-columnHeight-10)
+    ui.detailPanel:SetPoint('TOPLEFT',ui,'TOPLEFT',18,-158-columnHeight-10)
     ui.detailPanel:SetSize(inner,materialHeight)
     ui.detail:SetWidth(inner-26)
     ui.progressBack:SetWidth(inner)
@@ -1988,10 +2049,10 @@ local function createUI()
   ui.layout=layout
   ui:SetScript('OnSizeChanged',function()
     layout()
-    if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()+0.5) end
+    if db then db.windowWidth=math.floor(ui:GetWidth()+0.5);db.windowHeight=math.floor(ui:GetHeight()-38+0.5) end
   end)
   if db and db.windowWidth and db.windowHeight then
-    ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655)))
+    ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(528,math.min(1138,(tonumber(db.windowHeight) or 655)+38)))
   end
   layout()
   ui.statusElapsed=0
@@ -2017,6 +2078,7 @@ local function createUI()
     end
   end)
   ui:SetScript('OnShow',function()
+    layoutHeading(true)
     resetRecipeExpansion()
     if renderUI and db then renderUI() end
   end)
@@ -2468,7 +2530,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     db.characters=db.characters or {}; db.peers=db.peers or {}; db.playerNames=db.playerNames or {}
     admin.Init(db)
     if ui and ui.layout then
-      if db.windowWidth and db.windowHeight then ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(490,math.min(1100,tonumber(db.windowHeight) or 655))) end
+      if db.windowWidth and db.windowHeight then ui:SetSize(math.max(740,math.min(1600,tonumber(db.windowWidth) or 970)),math.max(528,math.min(1138,(tonumber(db.windowHeight) or 655)+38))) end
       ui.layout()
     end
     archiveShortAliases()
@@ -2477,7 +2539,7 @@ frame:SetScript('OnEvent',function(_,event,...)
     if not db then return end
     registerPrefix()
     positionMinimapButton()
-    say('Testversion 0.9.9 geladen. /spb oeffnet das Fenster')
+    say('Testversion 0.9.10 geladen. /spb oeffnet das Fenster')
     if type(GuildRoster)=='function' then GuildRoster() end
     migrateLocalAlias(who())
     capture(false);ensureLocalVersion(); enqueue('HELLO|CACHE1')
@@ -2719,6 +2781,7 @@ local function categoryProbe(term)
 end
 
 SLASH_SPUCKNAPFBERUFE1='/spb'
+SLASH_SPUCKNAPFBERUFE2='/spucknapf'
 SlashCmdList.SPUCKNAPFBERUFE=function(input)
   if not db then say('Datenbank noch nicht bereit.'); return end
   input=(input or ''):match('^%s*(.-)%s*$')
@@ -2731,6 +2794,9 @@ SlashCmdList.SPUCKNAPFBERUFE=function(input)
     elseif not playerKey() then say('Spieler-GUID noch nicht verfuegbar; bitte nach dem Login erneut versuchen.')
     elseif arg:find(' ',1,true) then db.playerNames[playerKey()]=arg; migrateLocalAlias(arg); capture(false); say('Vollstaendiger Name gesetzt: '..arg)
     else say('Bitte Vor- und Nachnamen eingeben.') end
+  elseif cmd=='headeratlas' then SpucknapfBerufeHeaderAtlas.Open(ui,say)
+  elseif cmd=='headerstatus' then say(ui and ui.windowHeaderDescribe() or 'Hauptfenster noch nicht erstellt; bitte einmal oeffnen.')
+  elseif cmd=='headerdebug' then SpucknapfBerufeHeaderDebug.Dump(ui,say,arg)
   elseif cmd=='api' then apiReport()
   elseif cmd=='scan' then if arg~='' then activeProfession=arg end; capture(true,arg)
   elseif cmd=='probe' then probe()
